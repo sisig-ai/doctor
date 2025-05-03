@@ -47,7 +47,7 @@ def validate_config() -> List[str]:
     issues = []
 
     # Only check for valid API key in production
-    if not os.getenv("DOCTOR_TEST_MODE"):
+    if not os.getenv("OPENAI_API_KEY"):
         issues.append("OPENAI_API_KEY environment variable is not set")
 
     # Ensure data directory exists
