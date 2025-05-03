@@ -1,0 +1,44 @@
+[project]
+name = "doctor"
+version = "0.1.0"
+description = "LLM agent system for discovering, crawling, and indexing web sites"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "redis",
+    "rq",
+    "crawl4ai",
+    "langchain-text-splitters",
+    "litellm",
+    "openai",
+    "duckdb",
+    "qdrant-client",
+    "pydantic>=2.0.0",
+    "httpx",
+    "python-multipart",
+    "uuid",
+    "fastapi-mcp>=0.3.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.hatch.build.targets.wheel]
+# Tell hatch where to find the packages for the 'doctor' project
+packages = ["src/common", "src/crawl_worker", "src/web_service"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.8",
+]

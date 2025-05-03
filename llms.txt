@@ -1,0 +1,47 @@
+# Doctor
+
+> Doctor is a system that lets LLM agents discover, crawl, and index web sites for better and more up-to-date reasoning and code generation.
+
+Doctor provides a complete stack for crawling, indexing, and searching web content to enhance LLM capabilities. It handles web crawling, text chunking, embedding generation, and semantic search, making this functionality available to large language models through a Model Context Protocol (MCP) server.
+
+## Core Components
+
+- [Crawl Worker](/src/crawl_worker) - Processes crawl jobs, chunks text, and creates embeddings
+- [Web Service](/src/web_service) - FastAPI service exposing endpoints for fetching, searching, and viewing data, and exposing MCP server
+- [Common](/src/common) - Shared code, models, and database utilities
+
+## Infrastructure
+
+- Qdrant - Vector database for storing and searching embeddings
+- Redis - Message broker for asynchronous task processing
+- DuckDB - SQL database for storing metadata and job information
+- Docker - Container orchestration for deploying the complete stack
+
+## Models
+
+- OpenAI Text Embeddings - Used for generating vector embeddings of text chunks
+  - Implementation: text-embedding-ada-002 (1536 dimensions)
+  - Integration: Accessed via litellm library
+
+## Libraries
+
+- crawl4ai - For web page crawling
+- langchain-text-splitters - For chunking text content
+- litellm - Wrapper for accessing embedding models
+- fastapi - Web service framework
+- fastapi-mcp - MCP server implementation
+
+## Technical Requirements
+
+- Docker and Docker Compose - For running the complete stack
+- Python 3.10+ - Primary programming language
+- OpenAI API key - Required for embedding generation
+
+## API Configuration
+
+- OpenAI API key must be provided via environment variable: OPENAI_API_KEY
+- Additional environment variables:
+  - QDRANT_HOST - Hostname for Qdrant vector database
+  - QDRANT_PORT - Port for Qdrant vector database
+  - REDIS_URI - URI for Redis connection
+  - DOCTOR_BASE_URL - Base URL for web service (used by MCP server)
