@@ -1,4 +1,5 @@
 # 🩺 Doctor
+[![Python Tests](https://github.com/username/doctor/actions/workflows/pytest.yml/badge.svg)](https://github.com/username/doctor/actions/workflows/pytest.yml)
 
 Doctor is a system that lets LLM agents discover, crawl, and index web sites for better and more up-to-date reasoning and code generation. 🕸️🔍🧠
 
