@@ -25,9 +25,19 @@ jobs:
         uv venv .venv
         uv sync
 
+    - name: Debug environment
+      run: |
+        echo "Current directory: $(pwd)"
+        echo "Python path: $(which python)"
+        echo "Python version: $(python --version)"
+        echo "Pytest version: $(.venv/bin/pytest --version)"
+        echo "Listing test directory:"
+        ls -la tests/
+        ls -la tests/lib/
+
     - name: Test with pytest
       run: |
-        .venv/bin/pytest -o "addopts=-v --cov=src --cov-report=xml"
+        .venv/bin/pytest tests/ -v --cov=src --cov-report=xml
 
     - name: Upload coverage to GitHub
       uses: codecov/codecov-action@v3
