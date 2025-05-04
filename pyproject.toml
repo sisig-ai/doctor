@@ -21,6 +21,8 @@ dependencies = [
     "uuid",
     "fastapi-mcp>=0.3.3",
     "mcp>=1.7.1",
+    "pytest>=8.3.5",
+    "pre-commit>=4.2.0",
 ]
 
 [build-system]
