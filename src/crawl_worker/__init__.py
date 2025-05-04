@@ -1,1 +1,1 @@
-"""Crawl Worker module for the Doctor project."""
+"""Crawl worker package for the Doctor application."""

@@ -37,9 +37,23 @@ target-version = ["py310"]
 
 [tool.hatch.build.targets.wheel]
 # Tell hatch where to find the packages for the 'doctor' project
-packages = ["src/common", "src/crawl_worker", "src/web_service"]
+packages = ["src/common", "src/crawl_worker", "src/web_service", "src/lib"]
 
 [dependency-groups]
 dev = [
     "ruff>=0.11.8",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+markers = [
+    "unit: marks tests as unit tests",
+    "integration: marks tests as integration tests",
+    "async_test: marks tests as asynchronous tests",
 ]

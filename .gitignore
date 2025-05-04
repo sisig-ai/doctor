@@ -58,3 +58,4 @@ docker-compose.override.yml
 Thumbs.db
 
 .roo
+.coverage
