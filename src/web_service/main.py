@@ -6,6 +6,7 @@ import logging
 import uuid
 from typing import List, Optional
 
+from mcp.server.session import ServerSession
 import redis
 from fastapi import FastAPI, HTTPException, Query
 from fastapi_mcp import FastApiMCP
@@ -42,6 +43,22 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Temporary monkeypatch which avoids crashing when a POST message is received
+# before a connection has been initialized, e.g: after a deployment.
+# pylint: disable-next=protected-access
+# https://github.com/modelcontextprotocol/python-sdk/issues/423
+old__received_request = ServerSession._received_request
+
+
+async def _received_request(self, *args, **kwargs):
+    try:
+        return await old__received_request(self, *args, **kwargs)
+    except RuntimeError:
+        pass
+
+
+ServerSession._received_request = _received_request
 
 
 @asynccontextmanager

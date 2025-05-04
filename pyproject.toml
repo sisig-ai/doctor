@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart",
     "uuid",
     "fastapi-mcp>=0.3.3",
+    "mcp>=1.7.1",
 ]
 
 [build-system]
