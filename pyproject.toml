@@ -23,6 +23,7 @@ dependencies = [
     "mcp>=1.7.1",
     "pytest>=8.3.5",
     "pre-commit>=4.2.0",
+    "coverage>=7.8.0",
 ]
 
 [build-system]

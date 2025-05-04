@@ -606,6 +606,7 @@ name = "doctor"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "coverage" },
     { name = "crawl4ai" },
     { name = "duckdb" },
     { name = "fastapi" },
@@ -637,6 +638,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "coverage", specifier = ">=7.8.0" },
     { name = "crawl4ai" },
     { name = "duckdb" },
     { name = "fastapi" },
