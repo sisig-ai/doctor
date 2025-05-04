@@ -26,7 +26,7 @@ jobs:
 
     - name: Test with pytest
       run: |
-        pytest --cov=src --cov-report=xml
+        python -m pytest --cov=src --cov-report=xml
 
     - name: Upload coverage to GitHub
       uses: codecov/codecov-action@v3
