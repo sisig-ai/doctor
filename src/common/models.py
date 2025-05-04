@@ -58,6 +58,15 @@ class JobProgressResponse(BaseModel):
     completed: bool = Field(..., description="Whether the job is completed")
     status: str = Field(..., description="Current job status")
     error_message: Optional[str] = Field(default=None, description="Error message if job failed")
+    progress_percent: Optional[int] = Field(
+        default=None, description="Percentage of crawl completed"
+    )
+    url: Optional[str] = Field(default=None, description="URL being crawled")
+    max_pages: Optional[int] = Field(default=None, description="Maximum pages to crawl")
+    created_at: Optional[datetime] = Field(default=None, description="When the job was created")
+    updated_at: Optional[datetime] = Field(
+        default=None, description="When the job was last updated"
+    )
 
 
 class ListDocPagesRequest(BaseModel):

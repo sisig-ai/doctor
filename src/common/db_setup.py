@@ -85,47 +85,23 @@ def get_duckdb_connection(read_only: bool = False) -> duckdb.DuckDBPyConnection:
 
 def get_read_only_connection() -> duckdb.DuckDBPyConnection:
     """
-    Get a read-only DuckDB connection by making a temporary copy of the database.
+    Get a read-only DuckDB connection that directly accesses the database file.
 
-    This approach avoids lock conflicts entirely by creating a point-in-time
-    copy of the database specifically for reading. The copy is made in memory
-    so no additional disk space is used.
+    This approach ensures we always get the most up-to-date data by directly
+    connecting to the database file with read_only=True, which allows concurrent
+    access even while the file is being written to by other processes.
 
     Returns:
-        Read-only DuckDB connection to a copy of the database
+        Read-only DuckDB connection to the database
     """
-
     try:
         # Check if the database file exists first
         if not os.path.exists(DUCKDB_PATH):
             logger.warning(
                 f"Database file {DUCKDB_PATH} does not exist yet, returning empty in-memory database"
             )
-            return duckdb.connect(":memory:")
-
-        # Create an in-memory database
-        logger.info("Creating in-memory database for read-only operations")
-        conn = duckdb.connect(":memory:")
-
-        # Import the entire database from the file
-        logger.info(f"Importing data from {DUCKDB_PATH} to in-memory database")
-
-        # Import schema and data from the main database
-        try:
-            conn.execute(f"IMPORT DATABASE '{DUCKDB_PATH}'")
-            logger.info("Successfully imported database to in-memory copy")
-            return conn
-        except Exception as e:
-            # If IMPORT DATABASE fails, try a less efficient but more reliable approach
-            logger.warning(f"IMPORT DATABASE failed: {str(e)}. Trying alternative approach...")
-
-            # Close the failed connection and start fresh
-            conn.close()
-
-            # Create a new in-memory connection
             conn = duckdb.connect(":memory:")
-
-            # Create the tables manually
+            # Create empty tables with the right schema
             conn.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
                 job_id VARCHAR PRIMARY KEY,
@@ -140,7 +116,6 @@ def get_read_only_connection() -> duckdb.DuckDBPyConnection:
                 error_message VARCHAR
             )
             """)
-
             conn.execute("""
             CREATE TABLE IF NOT EXISTS pages (
                 id VARCHAR PRIMARY KEY,
@@ -151,52 +126,36 @@ def get_read_only_connection() -> duckdb.DuckDBPyConnection:
                 tags VARCHAR
             )
             """)
-
-            # Try to read data with a separate connection and copy it
-            try:
-                logger.info("Attempting to directly read from database file...")
-                orig_conn = duckdb.connect(database=DUCKDB_PATH, read_only=True)
-
-                # Copy jobs data
-                jobs_data = orig_conn.execute("SELECT * FROM jobs").fetchall()
-                if jobs_data:
-                    logger.info(f"Copying {len(jobs_data)} job records to in-memory database")
-                    for job in jobs_data:
-                        conn.execute("INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", job)
-
-                # Copy pages data in batches to avoid memory issues with large datasets
-                batch_size = 100
-                offset = 0
-                while True:
-                    pages_data = orig_conn.execute(
-                        f"SELECT * FROM pages LIMIT {batch_size} OFFSET {offset}"
-                    ).fetchall()
-
-                    if not pages_data:
-                        break
-
-                    logger.info(
-                        f"Copying {len(pages_data)} page records to in-memory database (offset {offset})"
-                    )
-                    for page in pages_data:
-                        conn.execute("INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?)", page)
-
-                    offset += batch_size
-                    if len(pages_data) < batch_size:
-                        break
-
-                # Close the original connection
-                orig_conn.close()
-                logger.info("Successfully copied database to in-memory database")
-
-            except Exception as inner_e:
-                logger.warning(f"Could not copy data from main database: {str(inner_e)}")
-                # Return the empty database anyway, which will have the correct schema
-
             return conn
 
+        # Log file stats to help debug
+        file_size = os.path.getsize(DUCKDB_PATH)
+        file_mtime = os.path.getmtime(DUCKDB_PATH)
+        logger.info(f"Opening database file: size={file_size} bytes, last_modified={file_mtime}")
+
+        # Open a direct connection with read_only=True
+        logger.info(f"Connecting to DuckDB file {DUCKDB_PATH} in read-only mode")
+
+        # Use access_mode='READ_ONLY' to ensure filesystem-level read-only access
+        # This is safer than the Python API read_only parameter which just sets a flag
+        conn = duckdb.connect(DUCKDB_PATH, read_only=True)
+
+        # Test the connection to verify it's usable
+        try:
+            test_query = conn.execute("SELECT 1").fetchone()
+            if test_query and test_query[0] == 1:
+                logger.info("Successfully opened DuckDB database in read-only mode")
+            else:
+                logger.warning("Connection test returned unexpected result")
+        except Exception as e:
+            logger.warning(f"Connection test failed: {e}")
+            # Connection exists but query failed - we'll keep the connection anyway
+            # as future queries might succeed if the DB becomes available
+
+        return conn
+
     except Exception as e:
-        logger.error(f"Failed to create read-only in-memory copy: {str(e)}")
+        logger.error(f"Failed to create read-only connection: {str(e)}")
         # Fallback to memory-only database with correct schema but no data
         try:
             conn = duckdb.connect(":memory:")
@@ -297,8 +256,15 @@ def deserialize_tags(tags_json: str) -> List[str]:
         return []  # Return empty list on decode error
 
 
-def init_databases() -> None:
-    """Initialize all databases."""
+def init_databases(read_only: bool = False) -> None:
+    """
+    Initialize all databases.
+
+    Args:
+        read_only: Whether to initialize databases in read-only mode.
+                  Web service should use read_only=True.
+                  Crawl worker should use read_only=False (default).
+    """
     # Initialize Qdrant
     try:
         qdrant_client = get_qdrant_client()
@@ -308,12 +274,16 @@ def init_databases() -> None:
 
     # Initialize DuckDB
     try:
-        # ensure_duckdb_tables handles getting and closing the connection if needed
-        ensure_duckdb_tables()
+        if not read_only:
+            # For crawl worker, ensure tables exist
+            ensure_duckdb_tables()
+        else:
+            # For web service, just log that we're using read-only mode
+            logger.info("Initializing databases in read-only mode")
     except Exception as e:
         logger.error(f"Failed to initialize DuckDB: {e}")
 
-    logger.info("Database initialization process completed.")
+    logger.info(f"Database initialization process completed (read_only={read_only}).")
 
 
 if __name__ == "__main__":

@@ -26,8 +26,8 @@ def main():
         logger.error("Invalid configuration. Exiting.")
         return 1
 
-    # Initialize databases
-    init_databases()
+    # Initialize databases with write access
+    init_databases(read_only=False)
 
     # Connect to Redis
     logger.info(f"Connecting to Redis at {REDIS_URI}")

@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 import datetime
+import json
 import logging
 import uuid
 from typing import List, Optional
@@ -13,7 +14,6 @@ from fastapi_mcp import FastApiMCP
 from rq import Queue
 
 from src.common.config import (
-    EMBEDDING_MODEL,
     REDIS_URI,
     WEB_SERVICE_HOST,
     WEB_SERVICE_PORT,
@@ -21,11 +21,10 @@ from src.common.config import (
 from src.common.db_setup import (
     QDRANT_COLLECTION_NAME,
     deserialize_tags,
-    get_duckdb_connection,
     get_qdrant_client,
     get_read_only_connection,
     init_databases,
-    serialize_tags,
+    ensure_qdrant_collection,
 )
 from src.common.models import (
     DocPageSummary,
@@ -37,7 +36,7 @@ from src.common.models import (
     SearchDocsResponse,
     SearchResult,
 )
-from src.crawl_worker.tasks import perform_crawl
+from qdrant_client.http import models as qdrant_models
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -63,7 +62,8 @@ ServerSession._received_request = _received_request
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_databases()
+    # Initialize databases in read-only mode for the web service
+    init_databases(read_only=True)
     yield
 
 
@@ -91,45 +91,39 @@ async def fetch_url(request: FetchUrlRequest):
     Returns:
         The job ID
     """
-    # Generate a job ID
+    # Generate a temporary job ID
     job_id = str(uuid.uuid4())
 
-    # Create job record in DuckDB
-    conn = get_duckdb_connection()
-    conn.execute(
-        """
-        INSERT INTO jobs (
-            job_id, start_url, status, pages_discovered, pages_crawled, 
-            max_pages, tags, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            job_id,
-            str(request.url),
-            "pending",
-            0,
-            0,
-            request.max_pages,
-            serialize_tags(request.tags),
-            datetime.datetime.now(),
-            datetime.datetime.now(),
-        ),
-    )
-    conn.commit()
-    conn.close()
+    # Store the request details in Redis for the worker to pick up
+    redis_conn = redis.from_url(REDIS_URI)
+    job_request_key = f"job_request:{job_id}"
 
-    # Enqueue the crawl task
-    default_queue.enqueue(
-        perform_crawl,
-        job_id,  # Positional argument
+    # Store job request details
+    job_request_data = {
+        "url": str(request.url),
+        "max_pages": str(request.max_pages),
+        "tags": json.dumps(request.tags if request.tags else []),
+        "status": "requested",
+        "created_at": datetime.datetime.now().isoformat(),
+    }
+
+    # Store in Redis
+    redis_conn.hset(job_request_key, mapping=job_request_data)
+    # Set expiration to 24 hours
+    redis_conn.expire(job_request_key, 86400)
+
+    # Enqueue the job creation task
+    # The crawl worker will handle both creating the job record and enqueueing the crawl task
+    high_queue.enqueue(
+        "src.crawl_worker.tasks.create_job",
         url=str(request.url),
         tags=request.tags,
         max_pages=request.max_pages,
-        job_timeout="1h",  # Set a reasonable timeout
+        job_id=job_id,  # Pass the pre-generated job_id
+        job_timeout="5m",  # Set a reasonable timeout for job creation
     )
 
-    logger.info(f"Enqueued fetch job {job_id} for URL: {request.url}")
+    logger.info(f"Enqueued job creation for URL: {request.url}, job_id: {job_id}")
 
     return FetchUrlResponse(job_id=job_id)
 
@@ -151,49 +145,199 @@ async def search_docs(
     Returns:
         Search results
     """
-    import litellm
+    logger.info(f"Searching docs with query: '{query}', tags: {tags}, max_results: {max_results}")
 
-    # Generate query embedding
-    try:
-        embedding_response = litellm.embedding(model=EMBEDDING_MODEL, input=[query])
-        query_vector = embedding_response["data"][0]["embedding"]
-    except Exception as e:
-        logger.error(f"Error generating embedding: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error generating embedding: {str(e)}")
-
-    # Prepare filter if tags are provided
-    filter_query = None
-    if tags and len(tags) > 0:
-        filter_query = {"must": [{"key": "tags", "match": {"any": tags}}]}
-
-    # Search Qdrant - this doesn't use DuckDB so no changes needed
+    # Get a fresh connection to Qdrant for this search
     try:
         qdrant_client = get_qdrant_client()
-        search_results = qdrant_client.search(
-            collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=query_vector,
-            limit=max_results,
-            query_filter=filter_query,
-            with_payload=True,
-            with_vectors=False,
-        )
+        logger.debug("Connected to Qdrant for search")
 
-        # Format results
-        results = []
-        for hit in search_results:
-            results.append(
-                SearchResult(
-                    chunk_text=hit.payload.get("text", ""),
-                    page_id=hit.payload.get("page_id", ""),
-                    tags=hit.payload.get("tags", []),
-                    score=hit.score,
-                )
+        # Prepare filter based on tags
+        filter_conditions = None
+        if tags and len(tags) > 0:
+            filter_conditions = qdrant_models.Filter(
+                must=[
+                    qdrant_models.FieldCondition(
+                        key="tags",
+                        match=qdrant_models.MatchAny(any=tags),
+                    )
+                ]
             )
+            logger.debug(f"Applied tag filters: {tags}")
 
-        return SearchDocsResponse(results=results)
+        # Get a fresh DuckDB connection for verification and for getting the document text
+        conn = get_read_only_connection()
+        try:
+            # First verify the Qdrant collection exists
+            ensure_qdrant_collection(qdrant_client)
+
+            # Get embeddings for the query
+            from src.common.embeddings import get_embedding
+
+            results = []
+
+            try:
+                # Try semantic search first
+                query_embedding = get_embedding(query)
+                logger.debug("Generated embedding for search query")
+
+                # Search Qdrant
+                search_results = qdrant_client.search(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    query_vector=query_embedding,
+                    limit=max_results,
+                    query_filter=filter_conditions,
+                    with_payload=True,
+                )
+                logger.info(f"Found {len(search_results)} results from vector search")
+
+                # Format results
+                for result in search_results:
+                    chunk_id = result.id
+                    score = result.score
+                    page_id = result.payload.get("page_id")
+
+                    if not page_id:
+                        logger.warning(f"Result {chunk_id} missing page_id in payload")
+                        continue
+
+                    # Get chunk text from DuckDB
+                    try:
+                        chunk_query_result = conn.execute(
+                            """
+                            SELECT raw_text, tags
+                            FROM pages
+                            WHERE id = ?
+                            """,
+                            (page_id,),
+                        ).fetchone()
+
+                        if not chunk_query_result:
+                            logger.warning(f"Page {page_id} not found in database")
+                            continue
+
+                        raw_text, tags_json = chunk_query_result
+                        result_tags = deserialize_tags(tags_json)
+
+                        # Summarize text if it's too long for display
+                        chunk_text = raw_text
+                        if len(chunk_text) > 1000:
+                            chunk_text = chunk_text[:997] + "..."
+
+                        logger.debug(f"Retrieved text for page {page_id} ({len(raw_text)} chars)")
+
+                        results.append(
+                            SearchResult(
+                                chunk_text=chunk_text,
+                                page_id=page_id,
+                                tags=result_tags,
+                                score=score,
+                            )
+                        )
+                    except Exception as text_error:
+                        logger.error(f"Error retrieving text for page {page_id}: {str(text_error)}")
+                        # Continue with other results
+            except Exception as vector_error:
+                logger.warning(f"Vector search failed: {str(vector_error)}")
+
+            # If no results from vector search, try text search fallback
+            if not results:
+                logger.info("No results from vector search, trying text search fallback")
+
+                # Prepare tags filter for SQL
+                tags_filter = ""
+                if tags and len(tags) > 0:
+                    tag_conditions = []
+                    for tag in tags:
+                        escaped_tag = tag.replace("'", "''")
+                        tag_conditions.append(f"tags LIKE '%{escaped_tag}%'")
+                    tags_filter = f"AND ({' OR '.join(tag_conditions)})"
+
+                # Prepare search terms for SQL
+                search_terms = query.split()
+                if search_terms:
+                    # Build a query that searches for each word in the raw_text
+                    search_conditions = []
+                    for term in search_terms:
+                        if len(term) >= 3:  # Only use terms with at least 3 chars
+                            escaped_term = term.replace("'", "''")
+                            search_conditions.append(f"raw_text ILIKE '%{escaped_term}%'")
+
+                    if search_conditions:
+                        search_filter = f"({' OR '.join(search_conditions)})"
+
+                        # Execute the text search
+                        text_search_query = f"""
+                        SELECT id, url, raw_text, tags
+                        FROM pages
+                        WHERE {search_filter} {tags_filter}
+                        ORDER BY 
+                            CASE 
+                                WHEN url ILIKE '%{query.replace("'", "''")}%' THEN 1
+                                ELSE 2
+                            END,
+                            LENGTH(raw_text) DESC
+                        LIMIT {max_results}
+                        """
+
+                        logger.debug(f"Executing text search query: {text_search_query}")
+                        text_search_results = conn.execute(text_search_query).fetchall()
+                        logger.info(f"Found {len(text_search_results)} results from text search")
+
+                        # Process text search results
+                        for row in text_search_results:
+                            page_id, url, raw_text, tags_json = row
+                            result_tags = deserialize_tags(tags_json)
+
+                            # Calculate a relevance score based on term frequency
+                            term_count = 0
+                            for term in search_terms:
+                                if len(term) >= 3:
+                                    term_count += raw_text.lower().count(term.lower())
+
+                            # Normalize score to be between 0 and 1
+                            text_score = min(0.8, term_count / 100) if term_count > 0 else 0.5
+
+                            # Summarize text
+                            chunk_text = raw_text
+                            if len(chunk_text) > 1000:
+                                chunk_text = chunk_text[:997] + "..."
+
+                            # Try to find the context around the first search term
+                            highlight_context = None
+                            for term in search_terms:
+                                if len(term) >= 3:
+                                    term_pos = raw_text.lower().find(term.lower())
+                                    if term_pos >= 0:
+                                        start_pos = max(0, term_pos - 100)
+                                        end_pos = min(len(raw_text), term_pos + 100)
+                                        highlight_context = f"...{raw_text[start_pos:end_pos]}..."
+                                        break
+
+                            # Use highlight context if found
+                            if highlight_context:
+                                chunk_text = highlight_context
+
+                            results.append(
+                                SearchResult(
+                                    chunk_text=chunk_text,
+                                    page_id=page_id,
+                                    tags=result_tags,
+                                    score=text_score,
+                                )
+                            )
+
+            logger.info(f"Returning {len(results)} search results")
+            return SearchDocsResponse(results=results)
+        except Exception as db_error:
+            logger.error(f"Database error during search: {str(db_error)}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(db_error)}")
+        finally:
+            # Close DuckDB connection
+            conn.close()
     except Exception as e:
         logger.error(f"Error searching documents: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error searching documents: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
 
 @app.get("/job_progress", response_model=JobProgressResponse, operation_id="job_progress")
@@ -207,69 +351,75 @@ async def job_progress(job_id: str = Query(..., description="The job ID to check
     Returns:
         Job progress information
     """
-    # First try to get the status from Redis for real-time updates
-    try:
-        redis_conn = redis.from_url(REDIS_URI)
-        job_key = f"job_status:{job_id}"
+    logger.info(f"Checking progress for job {job_id}")
 
-        # Check if the job exists in Redis
-        if redis_conn.exists(job_key):
-            # Get all fields from the hash
-            job_data = redis_conn.hgetall(job_key)
-
-            # Convert byte keys/values to strings if needed
-            if isinstance(next(iter(job_data.keys()), b""), bytes):
-                job_data = {k.decode("utf-8"): v.decode("utf-8") for k, v in job_data.items()}
-
-            # Extract values with proper types
-            status = job_data.get("status", "unknown")
-            pages_discovered = int(job_data.get("pages_discovered", 0))
-            pages_crawled = int(job_data.get("pages_crawled", 0))
-            error_message = job_data.get("error_message")
-
-            # Determine if job is completed
-            completed = status in ["completed", "failed"]
-
-            logger.info(
-                f"Retrieved job {job_id} progress from Redis: {pages_crawled}/{pages_discovered} pages"
-            )
-
-            return JobProgressResponse(
-                pages_crawled=pages_crawled,
-                pages_total=pages_discovered,
-                completed=completed,
-                status=status,
-                error_message=error_message,
-            )
-
-    except Exception as e:
-        logger.warning(f"Could not retrieve job progress from Redis: {str(e)}")
-        # Continue to the DuckDB fallback
-
-    # Fallback to DuckDB if Redis failed or doesn't have the data
-    logger.info(f"Falling back to DuckDB for job {job_id} progress")
-
-    # Query DuckDB for job status using the read-only connection
+    # Create a fresh connection to get the latest data
+    # This ensures we always get the most recent job state
     conn = get_read_only_connection()
 
     try:
-        # The query remains the same as we've created views with the same names
+        # First try exact job_id match
+        logger.info(f"Looking for exact match for job ID: {job_id}")
         result = conn.execute(
             """
-            SELECT status, pages_discovered, pages_crawled, error_message
+            SELECT job_id, start_url, status, pages_discovered, pages_crawled,
+                   max_pages, tags, created_at, updated_at, error_message
             FROM jobs
             WHERE job_id = ?
             """,
             (job_id,),
         ).fetchone()
 
+        # If not found, try partial match (useful if client received truncated UUID)
+        if not result and len(job_id) >= 8:
+            logger.info(f"Exact match not found, trying partial match for job ID: {job_id}")
+            result = conn.execute(
+                """
+                SELECT job_id, start_url, status, pages_discovered, pages_crawled,
+                       max_pages, tags, created_at, updated_at, error_message
+                FROM jobs
+                WHERE job_id LIKE ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (f"{job_id}%",),
+            ).fetchone()
+
         if not result:
+            # Log the failure to find the job
+            logger.warning(f"Job {job_id} not found in database (tried exact and partial match)")
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
-        status, pages_discovered, pages_crawled, error_message = result
+        (
+            job_id,
+            url,
+            status,
+            pages_discovered,
+            pages_crawled,
+            max_pages,
+            tags_json,
+            created_at,
+            updated_at,
+            error_message,
+        ) = result
+
+        logger.info(
+            f"Found job with ID: {job_id}, status: {status}, discovered: {pages_discovered}, crawled: {pages_crawled}"
+        )
 
         # Determine if job is completed
         completed = status in ["completed", "failed"]
+
+        # Calculate progress percentage
+        progress_percent = 0
+        if max_pages > 0 and pages_discovered > 0:
+            progress_percent = min(
+                100, int((pages_crawled / min(pages_discovered, max_pages)) * 100)
+            )
+
+        logger.info(
+            f"Job {job_id} progress: {pages_crawled}/{pages_discovered} pages, {progress_percent}% complete, status: {status}"
+        )
 
         return JobProgressResponse(
             pages_crawled=pages_crawled,
@@ -277,7 +427,18 @@ async def job_progress(job_id: str = Query(..., description="The job ID to check
             completed=completed,
             status=status,
             error_message=error_message,
+            progress_percent=progress_percent,
+            url=url,
+            max_pages=max_pages,
+            created_at=created_at,
+            updated_at=updated_at,
         )
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Error checking job progress for {job_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         # Make sure to close the connection to free memory
         conn.close()
@@ -298,6 +459,8 @@ async def list_doc_pages(
     Returns:
         List of document pages
     """
+    logger.info(f"Listing document pages (page={page}, tags={tags})")
+
     # Calculate offset
     offset = (page - 1) * 100
 
@@ -319,19 +482,27 @@ async def list_doc_pages(
         # For each tag, check if it's in the JSON array
         tag_conditions = []
         for tag in tags:
-            tag_conditions.append(f"tags LIKE '%{tag}%'")
+            escaped_tag = tag.replace("'", "''")  # Escape single quotes for SQL
+            tag_conditions.append(f"tags LIKE '%{escaped_tag}%'")
 
         where_clause = f"WHERE {' OR '.join(tag_conditions)}"
+        logger.debug(f"Using tag filter: {where_clause}")
 
-    # Execute count query
+    # Get a fresh connection for each request
     conn = get_read_only_connection()
 
     try:
-        total_count = conn.execute(f"{count_query} {where_clause}").fetchone()[0]
+        # Execute count query
+        count_sql = f"{count_query} {where_clause}"
+        logger.debug(f"Executing count query: {count_sql}")
+        total_count = conn.execute(count_sql).fetchone()[0]
+        logger.info(f"Found {total_count} total document pages matching criteria")
 
-        # Execute main query
+        # Execute main query with pagination
         query = f"{base_query} {where_clause} ORDER BY crawl_date DESC LIMIT 100 OFFSET {offset}"
+        logger.debug(f"Executing page query: {query}")
         results = conn.execute(query).fetchall()
+        logger.info(f"Retrieved {len(results)} document pages for current page")
 
         # Format results
         doc_pages = []
@@ -350,6 +521,9 @@ async def list_doc_pages(
         return ListDocPagesResponse(
             doc_pages=doc_pages, total_pages=total_count, current_page=page, pages_per_page=100
         )
+    except Exception as e:
+        logger.error(f"Error listing document pages: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
 
@@ -371,10 +545,13 @@ async def get_doc_page(
     Returns:
         Document page text
     """
-    # Query DuckDB for page text
+    logger.info(f"Retrieving document page {page_id} (lines {starting_line}-{ending_line})")
+
+    # Get a fresh connection for each request
     conn = get_read_only_connection()
 
     try:
+        # Query for the page
         result = conn.execute(
             """
             SELECT raw_text
@@ -385,25 +562,41 @@ async def get_doc_page(
         ).fetchone()
 
         if not result:
+            logger.warning(f"Page {page_id} not found in database")
             raise HTTPException(status_code=404, detail=f"Page {page_id} not found")
 
         raw_text = result[0]
+        logger.info(f"Found page {page_id} with {len(raw_text)} characters")
 
         # Split into lines
         lines = raw_text.splitlines()
         total_lines = len(lines)
+        logger.debug(f"Page has {total_lines} total lines")
 
         # Validate line range
         if starting_line > total_lines:
+            logger.warning(
+                f"Starting line {starting_line} exceeds total lines {total_lines}, resetting to 1"
+            )
             starting_line = 1
 
         if ending_line > total_lines:
+            logger.debug(
+                f"Ending line {ending_line} exceeds total lines {total_lines}, capping at {total_lines}"
+            )
             ending_line = total_lines
 
         # Extract requested lines
         requested_lines = lines[starting_line - 1 : ending_line]
+        logger.info(f"Returning {len(requested_lines)} lines from page {page_id}")
 
         return GetDocPageResponse(text="\n".join(requested_lines), total_lines=total_lines)
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving document page {page_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
 

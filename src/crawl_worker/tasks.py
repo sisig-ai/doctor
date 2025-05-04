@@ -12,9 +12,8 @@ from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
 from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import litellm
-import redis
 
-from src.common.config import EMBEDDING_MODEL, CHUNK_SIZE, CHUNK_OVERLAP, REDIS_URI
+from src.common.config import EMBEDDING_MODEL, CHUNK_SIZE, CHUNK_OVERLAP
 from src.common.db_setup import (
     get_duckdb_connection,
     get_qdrant_client,
@@ -27,6 +26,106 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def create_job(
+    url: str, tags: Optional[List[str]] = None, max_pages: int = 100, job_id: Optional[str] = None
+) -> str:
+    """
+    Create a new crawl job in the database.
+
+    Args:
+        url: The URL to start crawling from
+        tags: Optional tags to associate with the crawled pages
+        max_pages: Maximum number of pages to crawl
+        job_id: Optional pre-generated job ID
+
+    Returns:
+        The job ID
+    """
+    if tags is None:
+        tags = []
+
+    # Use provided job_id or generate a new one
+    if job_id is None:
+        job_id = str(uuid.uuid4())
+
+    logger.info(f"Creating new job {job_id} for URL: {url}, max pages: {max_pages}")
+
+    # Create job record in DuckDB
+    conn = get_duckdb_connection()
+    now = datetime.datetime.now()
+
+    try:
+        # Insert into DuckDB
+        logger.info(f"Inserting job {job_id} into DuckDB")
+        conn.execute(
+            """
+            INSERT INTO jobs (
+                job_id, start_url, status, pages_discovered, pages_crawled,
+                max_pages, tags, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                str(url),
+                "pending",
+                0,
+                0,
+                max_pages,
+                serialize_tags(tags),
+                now,
+                now,
+            ),
+        )
+        # Ensure the changes are written to disk
+        conn.commit()
+
+        # Force a checkpoint to ensure changes are persisted
+        conn.execute("CHECKPOINT")
+
+        # Verify the job was created by reading it back
+        job_record = conn.execute("SELECT job_id FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        if not job_record:
+            logger.error(f"Job {job_id} was not successfully created in the database!")
+            raise Exception(f"Failed to create job {job_id} in the database")
+
+        logger.info(f"Successfully created job {job_id} in DuckDB")
+
+        # Enqueue the crawl task
+        from rq import Queue
+        import redis
+        from src.common.config import REDIS_URI
+
+        redis_conn = redis.from_url(REDIS_URI)
+        default_queue = Queue("default", connection=redis_conn)
+
+        # Clean up the job request from Redis if it exists
+        job_request_key = f"job_request:{job_id}"
+        if redis_conn.exists(job_request_key):
+            logger.info(f"Cleaning up job request {job_id} from Redis")
+            redis_conn.delete(job_request_key)
+
+        # Enqueue the crawl task
+        logger.info(f"Enqueueing crawl task for job {job_id}")
+        default_queue.enqueue(
+            perform_crawl,
+            job_id,  # Positional argument
+            url=url,
+            tags=tags,
+            max_pages=max_pages,
+            job_timeout="1h",  # Set a reasonable timeout
+        )
+
+        logger.info(f"Enqueued crawl task for job {job_id}")
+
+        return job_id
+    except Exception as e:
+        logger.exception(f"Error creating job for URL {url}: {str(e)}")
+        raise
+    finally:
+        conn.close()
 
 
 def perform_crawl(
@@ -64,8 +163,8 @@ def perform_crawl(
     )
     conn.commit()
 
-    # Update in Redis
-    _update_redis_job_status(job_id, "running", now)
+    # Force a checkpoint to ensure changes are persisted
+    conn.execute("CHECKPOINT")
 
     try:
         # Run the crawl
@@ -83,8 +182,8 @@ def perform_crawl(
         )
         conn.commit()
 
-        # Update in Redis
-        _update_redis_job_status(job_id, "completed", now)
+        # Force a checkpoint to ensure changes are persisted
+        conn.execute("CHECKPOINT")
 
         logger.info(f"Completed crawl job {job_id}: {result}")
         return result
@@ -107,46 +206,46 @@ def perform_crawl(
         )
         conn.commit()
 
-        # Update in Redis
-        _update_redis_job_status(job_id, "failed", now, error_msg)
+        # Force a checkpoint to ensure changes are persisted
+        conn.execute("CHECKPOINT")
 
         return {"job_id": job_id, "status": "failed", "error": error_msg}
     finally:
         conn.close()
 
 
-def _update_redis_job_status(
-    job_id: str, status: str, updated_at: datetime.datetime, error_message: Optional[str] = None
+def _update_job_progress(
+    conn: duckdb.DuckDBPyConnection, job_id: str, pages_discovered: int, pages_crawled: int
 ) -> None:
     """
-    Update job status in Redis.
+    Update the job progress in the database.
 
     Args:
+        conn: DuckDB connection
         job_id: The job ID
-        status: Job status
-        updated_at: Timestamp
-        error_message: Optional error message
+        pages_discovered: Number of pages discovered
+        pages_crawled: Number of pages crawled
     """
-    try:
-        # Connect to Redis
-        redis_conn = redis.from_url(REDIS_URI)
+    # Only update DuckDB
+    now = datetime.datetime.now()
+    conn.execute(
+        """
+        UPDATE jobs
+        SET pages_discovered = ?, pages_crawled = ?, updated_at = ?
+        WHERE job_id = ?
+        """,
+        (pages_discovered, pages_crawled, now, job_id),
+    )
+    conn.commit()
 
-        # Get existing data if any
-        job_key = f"job_status:{job_id}"
-
-        # Use existing data or create new
-        job_data = {"status": status, "updated_at": updated_at.isoformat()}
-
-        if error_message:
-            job_data["error_message"] = error_message
-
-        # Store in Redis
-        redis_conn.hset(job_key, mapping=job_data)
-        # Set expiration to 24 hours
-        redis_conn.expire(job_key, 86400)
-    except Exception as e:
-        # Log but continue - Redis storage is secondary
-        logger.warning(f"Failed to update Redis with job status: {str(e)}")
+    # Periodically force a checkpoint to ensure changes are persisted
+    # Don't do this every time to avoid performance impact
+    if pages_crawled % 10 == 0 or pages_crawled == pages_discovered:
+        try:
+            conn.execute("CHECKPOINT")
+            logger.info(f"Forced checkpoint after processing {pages_crawled} pages")
+        except Exception as e:
+            logger.warning(f"Failed to checkpoint: {str(e)}")
 
 
 async def _crawl_and_process(
@@ -201,6 +300,8 @@ async def _crawl_and_process(
         pages_discovered = len(crawl_results)
         logger.info(f"Job {job_id}: Deep crawl discovered {pages_discovered} pages.")
 
+        logger.error(f"DEBUGGING: Crawl complete, about to process {len(crawl_results)} results")
+
         # Process each crawled page result
         for i, page_result in enumerate(crawl_results):
             # Check max_pages again just in case crawl4ai returns more than requested
@@ -217,7 +318,11 @@ async def _crawl_and_process(
                 await _process_page(page_result, text_splitter, qdrant_client, conn, job_id, tags)
                 pages_crawled += 1
                 # Update progress less frequently to avoid excessive DB writes
-                if pages_crawled % 5 == 0 or pages_crawled == pages_discovered:
+                if (
+                    pages_crawled % 5 == 0
+                    or pages_crawled == pages_discovered
+                    or pages_discovered < 5
+                ):
                     _update_job_progress(conn, job_id, pages_discovered, pages_crawled)
             except Exception as page_error:
                 logger.error(f"Job {job_id}: Error processing page {page_result.url}: {page_error}")
@@ -251,6 +356,7 @@ async def _process_page(
         job_id: The job ID
         tags: Tags to associate with the page
     """
+    logger.error(f"DEBUGGING: Starting to process page {page_result.url}")
     # Generate a unique page ID
     page_id = str(uuid.uuid4())
 
@@ -263,12 +369,16 @@ async def _process_page(
     # Use markdown if available, otherwise use extracted content or HTML
     if hasattr(page_result, "_markdown") and page_result._markdown:
         page_text = page_result._markdown.raw_markdown
+        logger.error(f"DEBUGGING: Using markdown text of length {len(page_text)}")
     elif page_result.extracted_content:
         page_text = page_result.extracted_content
+        logger.error(f"DEBUGGING: Using extracted content of length {len(page_text)}")
     else:
         page_text = page_result.html
+        logger.error(f"DEBUGGING: Using HTML content of length {len(page_text)}")
 
     # Store page data
+    logger.error("DEBUGGING: About to insert page into DuckDB")
     conn.execute(
         """
         INSERT INTO pages (id, url, domain, raw_text, crawl_date, tags)
@@ -283,20 +393,41 @@ async def _process_page(
             serialize_tags(tags),
         ),
     )
-    conn.commit()
+    try:
+        # Database operations
+        conn.commit()
+        logger.error("DEBUGGING: Successfully committed page to DuckDB")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Database error: {e}")
+        raise
 
     # Split text into chunks
+    logger.error("DEBUGGING: Starting text splitting")
     chunks = text_splitter.split_text(page_text)
+    logger.error(f"DEBUGGING: Split text into {len(chunks)} chunks")
 
     # Process each chunk
-    for chunk_text in chunks:
+    chunk_count = 0
+    success_count = 0
+    for i, chunk_text in enumerate(chunks):
         # Skip empty chunks
         if not chunk_text.strip():
+            logger.error(f"DEBUGGING: Skipping empty chunk #{i}")
             continue
 
+        chunk_count += 1
         # Generate embedding
         try:
-            embedding_response = litellm.embedding(model=EMBEDDING_MODEL, input=[chunk_text])
+            logger.error(
+                f"DEBUGGING: Generating embedding for chunk #{i} of length {len(chunk_text)}"
+            )
+            embedding_response = litellm.embedding(
+                model=EMBEDDING_MODEL,
+                input=[chunk_text],
+                timeout=30,  # Add timeout in seconds
+            )
+            logger.error(f"DEBUGGING: Successfully received embedding response for chunk #{i}")
             embedding = embedding_response["data"][0]["embedding"]
 
             # Generate a unique point ID
@@ -306,69 +437,18 @@ async def _process_page(
             payload = {"text": chunk_text, "page_id": page_id, "domain": domain, "tags": tags}
 
             # Upsert the point into Qdrant
+            logger.error(f"DEBUGGING: Upserting point into Qdrant collection for chunk #{i}")
             qdrant_client.upsert(
                 collection_name=QDRANT_COLLECTION_NAME,
                 points=[{"id": point_id, "vector": embedding, "payload": payload}],
             )
+            logger.error(f"DEBUGGING: Successfully stored point in Qdrant for chunk #{i}")
+            success_count += 1
 
         except Exception as e:
-            logger.error(f"Error generating embedding for chunk: {str(e)}")
+            logger.error(f"Embedding error for chunk #{i}: {e}")
             continue
 
-
-def _update_job_progress(
-    conn: duckdb.DuckDBPyConnection, job_id: str, pages_discovered: int, pages_crawled: int
-) -> None:
-    """
-    Update the job progress in the database and Redis.
-
-    Args:
-        conn: DuckDB connection
-        job_id: The job ID
-        pages_discovered: Number of pages discovered
-        pages_crawled: Number of pages crawled
-    """
-    # Update in DuckDB
-    now = datetime.datetime.now()
-    conn.execute(
-        """
-        UPDATE jobs
-        SET pages_discovered = ?, pages_crawled = ?, updated_at = ?
-        WHERE job_id = ?
-        """,
-        (pages_discovered, pages_crawled, now, job_id),
+    logger.error(
+        f"DEBUGGING: Completed processing page {page_result.url} - processed {chunk_count} chunks with {success_count} successful embeddings"
     )
-    conn.commit()
-
-    # Also update in Redis for real-time access
-    try:
-        # Get current job status from DuckDB
-        status_result = conn.execute(
-            "SELECT status, error_message FROM jobs WHERE job_id = ?", (job_id,)
-        ).fetchone()
-
-        if status_result:
-            status, error_message = status_result
-
-            # Connect to Redis
-            redis_conn = redis.from_url(REDIS_URI)
-
-            # Store job progress in Redis hash
-            job_key = f"job_status:{job_id}"
-            job_data = {
-                "pages_discovered": str(pages_discovered),
-                "pages_crawled": str(pages_crawled),
-                "status": status,
-                "updated_at": now.isoformat(),
-            }
-
-            if error_message:
-                job_data["error_message"] = error_message
-
-            # Store in Redis
-            redis_conn.hset(job_key, mapping=job_data)
-            # Set expiration to 24 hours
-            redis_conn.expire(job_key, 86400)
-    except Exception as e:
-        # Log but continue - Redis storage is secondary to DuckDB
-        logger.warning(f"Failed to update Redis with job progress: {str(e)}")
