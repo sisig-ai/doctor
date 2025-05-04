@@ -23,14 +23,16 @@ class TextChunker:
         """
         self.chunk_size = chunk_size or CHUNK_SIZE
         self.chunk_overlap = chunk_overlap or CHUNK_OVERLAP
-        
+
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
             length_function=len,
         )
-        
-        logger.debug(f"Initialized TextChunker with chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}")
+
+        logger.debug(
+            f"Initialized TextChunker with chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}"
+        )
 
     def split_text(self, text: str) -> List[str]:
         """
@@ -45,13 +47,13 @@ class TextChunker:
         if not text or not text.strip():
             logger.warning("Received empty text for chunking, returning empty list")
             return []
-            
+
         chunks = self.text_splitter.split_text(text)
         logger.debug(f"Split text of length {len(text)} into {len(chunks)} chunks")
-        
+
         # Filter out empty chunks
         non_empty_chunks = [chunk for chunk in chunks if chunk.strip()]
         if len(non_empty_chunks) < len(chunks):
             logger.debug(f"Filtered out {len(chunks) - len(non_empty_chunks)} empty chunks")
-            
-        return non_empty_chunks 
+
+        return non_empty_chunks

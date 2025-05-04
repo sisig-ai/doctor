@@ -1,7 +1,7 @@
 """Web crawling functionality using crawl4ai."""
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Any
 
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
 from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
@@ -39,19 +39,19 @@ async def crawl_url(url: str, max_pages: int = 100, max_depth: int = 3) -> List[
 
         # Crawl the URL - returns a list of CrawlResult objects when deep crawling
         crawl_results = await crawler.arun(url=url, config=config)
-        
+
         logger.info(f"Deep crawl discovered {len(crawl_results)} pages")
-        
+
         return crawl_results
 
 
 def extract_page_text(page_result: Any) -> str:
     """
     Extract the text content from a crawl4ai page result.
-    
+
     Args:
         page_result: The crawl result for the page
-        
+
     Returns:
         The extracted text content
     """
@@ -65,5 +65,5 @@ def extract_page_text(page_result: Any) -> str:
     else:
         page_text = page_result.html
         logger.debug(f"Using HTML content of length {len(page_text)}")
-        
-    return page_text 
+
+    return page_text

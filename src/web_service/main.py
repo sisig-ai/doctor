@@ -271,8 +271,8 @@ async def search_docs(
                         SELECT id, url, raw_text, tags
                         FROM pages
                         WHERE {search_filter} {tags_filter}
-                        ORDER BY 
-                            CASE 
+                        ORDER BY
+                            CASE
                                 WHEN url ILIKE '%{query.replace("'", "''")}%' THEN 1
                                 ELSE 2
                             END,

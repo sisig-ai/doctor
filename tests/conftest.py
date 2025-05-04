@@ -22,12 +22,12 @@ def sample_url():
 def sample_text():
     """Sample text content for testing."""
     return """
-    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam auctor, 
+    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam auctor,
     nisl nec ultricies lacinia, nisl nisl aliquet nisl, nec ultricies nisl
     nisl nec ultricies lacinia, nisl nisl aliquet nisl, nec ultricies nisl
     nisl nec ultricies lacinia, nisl nisl aliquet nisl, nec ultricies nisl.
-    
-    Pellentesque habitant morbi tristique senectus et netus et malesuada 
+
+    Pellentesque habitant morbi tristique senectus et netus et malesuada
     fames ac turpis egestas. Sed euismod, nisl nec ultricies lacinia, nisl
     nisl aliquet nisl, nec ultricies nisl nisl nec ultricies lacinia.
     """

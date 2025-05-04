@@ -44,4 +44,4 @@ pytest tests/lib/test_crawler.py
 
 - `unit`: Unit tests
 - `integration`: Integration tests (not implemented yet)
-- `async_test`: Tests that use asyncio 
+- `async_test`: Tests that use asyncio

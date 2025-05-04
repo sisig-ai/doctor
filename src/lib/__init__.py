@@ -1,1 +1,1 @@
-"""Shared library components for the Doctor application.""" 
+"""Shared library components for the Doctor application."""
