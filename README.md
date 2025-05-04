@@ -1,5 +1,6 @@
 # 🩺 Doctor
-[![Python Tests](https://github.com/username/doctor/actions/workflows/pytest.yml/badge.svg)](https://github.com/username/doctor/actions/workflows/pytest.yml)
+[![Python Tests](https://github.com/sisig-ai/doctor/actions/workflows/pytest.yml/badge.svg)](https://github.com/sisig-ai/doctor/actions/workflows/pytest.yml)
+[![codecov](https://codecov.io/gh/sisig-ai/doctor/branch/main/graph/badge.svg)](https://codecov.io/gh/sisig-ai/doctor)
 
 Doctor is a system that lets LLM agents discover, crawl, and index web sites for better and more up-to-date reasoning and code generation. 🕸️🔍🧠
 
