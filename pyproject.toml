@@ -3,7 +3,7 @@ name = "doctor"
 version = "0.1.0"
 description = "LLM agent system for discovering, crawling, and indexing web sites"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi",
     "uvicorn[standard]",
@@ -20,10 +20,7 @@ dependencies = [
     "python-multipart",
     "uuid",
     "fastapi-mcp>=0.3.3",
-    "mcp>=1.7.1",
-    "pytest>=8.3.5",
-    "pre-commit>=4.2.0",
-    "coverage>=7.8.0",
+    "mcp>=1.7.1"
 ]
 
 [build-system]
@@ -45,10 +42,11 @@ packages = ["src/common", "src/crawl_worker", "src/web_service", "src/lib"]
 [dependency-groups]
 dev = [
     "ruff>=0.11.8",
-    "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
-    "pre-commit>=3.5.0",
+    "pytest>=8.3.5",
+    "pre-commit>=4.2.0",
+    "coverage>=7.8.0",
 ]
 
 [tool.pytest.ini_options]
