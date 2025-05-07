@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 
+from typing import AsyncIterator
 import redis
 from fastapi import FastAPI
 from fastapi_mcp import FastApiMCP
@@ -29,6 +30,7 @@ old__received_request = ServerSession._received_request
 
 
 async def _received_request(self, *args, **kwargs):
+    """Monkeypatch to handle RuntimeError during request reception."""
     try:
         return await old__received_request(self, *args, **kwargs)
     except RuntimeError:
@@ -39,10 +41,17 @@ ServerSession._received_request = _received_request
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    Lifespan context manager for the FastAPI application.
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Lifespan context manager for the FastAPI application.
+
     Handles startup and shutdown events.
+
+    Args:
+        app: The FastAPI application instance.
+
+    Yields:
+        None: Indicates the application is ready.
     """
     # Initialize databases in read-only mode for the web service
     init_databases(read_only=True)
@@ -52,8 +61,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_application() -> FastAPI:
-    """
-    Create and configure the FastAPI application.
+    """Creates and configures the FastAPI application.
 
     Returns:
         FastAPI: Configured FastAPI application

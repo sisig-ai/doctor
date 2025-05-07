@@ -52,13 +52,21 @@ CREATE OR REPLACE TABLE pages (
 
 
 def get_qdrant_client() -> QdrantClient:
-    """Get a Qdrant client using configuration settings."""
+    """Gets a Qdrant client using configuration settings.
+
+    Returns:
+        QdrantClient: The configured Qdrant client.
+    """
     logger.info(f"Connecting to Qdrant at {QDRANT_HOST}:{QDRANT_PORT}")
     return QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 
 
 def ensure_qdrant_collection(client: Optional[QdrantClient] = None) -> None:
-    """Ensure the Qdrant collection exists, creating it if necessary."""
+    """Ensures the Qdrant collection exists, creating it if necessary.
+
+    Args:
+        client: An optional Qdrant client instance. If None, a new client is created.
+    """
     if client is None:
         client = get_qdrant_client()
 
@@ -165,7 +173,11 @@ def get_read_only_connection() -> duckdb.DuckDBPyConnection:
 
 
 def ensure_duckdb_tables(conn: Optional[duckdb.DuckDBPyConnection] = None) -> None:
-    """Ensure the DuckDB tables exist, creating them if necessary."""
+    """Ensures the DuckDB tables exist, creating them if necessary.
+
+    Args:
+        conn: An optional DuckDB connection. If None, a new connection is created.
+    """
     close_conn = False
     if conn is None:
         try:
@@ -191,14 +203,28 @@ def ensure_duckdb_tables(conn: Optional[duckdb.DuckDBPyConnection] = None) -> No
 
 
 def serialize_tags(tags: Optional[List[str]]) -> str:
-    """Serialize tags list to JSON string for storage in DuckDB."""
+    """Serializes a list of tags to a JSON string for storage in DuckDB.
+
+    Args:
+        tags: A list of tags (strings) or None.
+
+    Returns:
+        str: A JSON string representation of the tags list.
+    """
     if tags is None:
         return json.dumps([])
     return json.dumps(tags)
 
 
 def deserialize_tags(tags_json: str) -> List[str]:
-    """Deserialize tags JSON string from DuckDB to a list."""
+    """Deserializes a tags JSON string from DuckDB to a list of strings.
+
+    Args:
+        tags_json: The JSON string containing the tags.
+
+    Returns:
+        List[str]: A list of tags (strings). Returns an empty list if the input is empty or invalid JSON.
+    """
     if not tags_json:
         return []
     try:
@@ -209,7 +235,11 @@ def deserialize_tags(tags_json: str) -> List[str]:
 
 
 def init_databases(read_only: bool = False) -> None:
-    """Initialize all databases, creating them if they don't exist."""
+    """Initializes all databases (DuckDB and Qdrant), creating them if they don't exist.
+
+    Args:
+        read_only: If True, initializes DuckDB in read-only mode (tables are not created).
+    """
     logger.info("Initializing databases")
 
     try:

@@ -11,8 +11,12 @@ from src.lib.logger import get_logger
 logger = get_logger(__name__)
 
 
-def main():
-    """Main entry point for the Crawl Worker."""
+def main() -> int:
+    """Main entry point for the Crawl Worker.
+
+    Returns:
+        int: The exit code (0 for success, 1 for failure).
+    """
     # Validate configuration
     if not check_config():
         logger.error("Invalid configuration. Exiting.")

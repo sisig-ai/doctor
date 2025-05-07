@@ -21,18 +21,15 @@ router = APIRouter(tags=["admin"])
 @router.post("/delete_docs", status_code=status.HTTP_204_NO_CONTENT, operation_id="delete_docs")
 async def delete_docs_endpoint(
     request: DeleteDocsRequest, queue: Queue = Depends(lambda: Queue("worker"))
-):
-    """
-    Delete documents from the database based on filters.
+) -> None:
+    """Deletes documents from the database based on filters.
 
     Args:
-        request: The delete request with optional filters
-            tags: Optional list of tags to filter by
-            domain: Optional domain substring to filter by
-            page_ids: Optional list of specific page IDs to delete
+        request: The delete request with optional filters.
+        queue: The RQ queue for enqueueing the delete task.
 
     Returns:
-        204 No Content response
+        None: Returns a 204 No Content response upon successful enqueueing.
     """
     logger.info(
         f"API: Deleting docs with filters: tags={request.tags}, domain={request.domain}, page_ids={request.page_ids}"
