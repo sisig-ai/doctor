@@ -36,6 +36,7 @@ class SearchResult(BaseModel):
     page_id: str = Field(..., description="Reference to the original page")
     tags: List[str] = Field(default_factory=list, description="Tags associated with the chunk")
     score: float = Field(..., description="Similarity score")
+    url: str = Field(..., description="Original URL of the page")
 
 
 class SearchDocsResponse(BaseModel):

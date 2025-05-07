@@ -111,7 +111,7 @@ async def search_docs(
     max_results: int = Query(10, description="Maximum number of results to return", ge=1, le=100),
 ):
     """
-    Search for documents using semantic search.
+    Search for documents using semantic search. Use the `get_doc_page` endpoint to get the full text of a document page.
 
     Args:
         query: The search query
@@ -167,141 +167,55 @@ async def search_docs(
                 )
                 logger.info(f"Found {len(search_results)} results from vector search")
 
-                # Format results
+                # Keep track of the highest scoring chunk per page
+                page_best_results = {}
+
+                # Process results and keep only the highest scoring chunk per page
                 for result in search_results:
                     chunk_id = result.id
                     score = result.score
                     page_id = result.payload.get("page_id")
+                    chunk_text = result.payload.get("text")
+                    result_tags = result.payload.get("tags", [])
+                    url = result.payload.get("url")
 
-                    if not page_id:
-                        logger.warning(f"Result {chunk_id} missing page_id in payload")
+                    if not page_id or not chunk_text:
+                        logger.warning(f"Result {chunk_id} missing page_id or text in payload")
                         continue
 
-                    # Get chunk text from DuckDB
-                    try:
-                        chunk_query_result = conn.execute(
-                            """
-                            SELECT raw_text, tags
-                            FROM pages
-                            WHERE id = ?
-                            """,
-                            (page_id,),
-                        ).fetchone()
+                    # Only keep this result if it's the first one for this page_id
+                    # or if it has a higher score than the current best for this page_id
+                    if (
+                        page_id not in page_best_results
+                        or score > page_best_results[page_id]["score"]
+                    ):
+                        page_best_results[page_id] = {
+                            "chunk_text": chunk_text,
+                            "tags": result_tags,
+                            "score": score,
+                            "url": url,
+                        }
 
-                        if not chunk_query_result:
-                            logger.warning(f"Page {page_id} not found in database")
-                            continue
-
-                        raw_text, tags_json = chunk_query_result
-                        result_tags = deserialize_tags(tags_json)
-
-                        # Summarize text if it's too long for display
-                        chunk_text = raw_text
-                        if len(chunk_text) > 1000:
-                            chunk_text = chunk_text[:997] + "..."
-
-                        logger.debug(f"Retrieved text for page {page_id} ({len(raw_text)} chars)")
-
-                        results.append(
-                            SearchResult(
-                                chunk_text=chunk_text,
-                                page_id=page_id,
-                                tags=result_tags,
-                                score=score,
-                            )
+                # Convert the dictionary of best results to a list of SearchResult objects
+                for page_id, best_result in page_best_results.items():
+                    results.append(
+                        SearchResult(
+                            chunk_text=best_result["chunk_text"],
+                            page_id=page_id,
+                            tags=best_result["tags"],
+                            score=best_result["score"],
+                            url=best_result["url"],
                         )
-                    except Exception as text_error:
-                        logger.error(f"Error retrieving text for page {page_id}: {str(text_error)}")
-                        # Continue with other results
+                    )
+
+                # Sort results by score in descending order
+                results.sort(key=lambda x: x.score, reverse=True)
+
+                # Limit results to max_results if needed
+                if len(results) > max_results:
+                    results = results[:max_results]
             except Exception as vector_error:
                 logger.warning(f"Vector search failed: {str(vector_error)}")
-
-            # If no results from vector search, try text search fallback
-            if not results:
-                logger.info("No results from vector search, trying text search fallback")
-
-                # Prepare tags filter for SQL
-                tags_filter = ""
-                if tags and len(tags) > 0:
-                    tag_conditions = []
-                    for tag in tags:
-                        escaped_tag = tag.replace("'", "''")
-                        tag_conditions.append(f"tags LIKE '%{escaped_tag}%'")
-                    tags_filter = f"AND ({' OR '.join(tag_conditions)})"
-
-                # Prepare search terms for SQL
-                search_terms = query.split()
-                if search_terms:
-                    # Build a query that searches for each word in the raw_text
-                    search_conditions = []
-                    for term in search_terms:
-                        if len(term) >= 3:  # Only use terms with at least 3 chars
-                            escaped_term = term.replace("'", "''")
-                            search_conditions.append(f"raw_text ILIKE '%{escaped_term}%'")
-
-                    if search_conditions:
-                        search_filter = f"({' OR '.join(search_conditions)})"
-
-                        # Execute the text search
-                        text_search_query = f"""
-                        SELECT id, url, raw_text, tags
-                        FROM pages
-                        WHERE {search_filter} {tags_filter}
-                        ORDER BY
-                            CASE
-                                WHEN url ILIKE '%{query.replace("'", "''")}%' THEN 1
-                                ELSE 2
-                            END,
-                            LENGTH(raw_text) DESC
-                        LIMIT {max_results}
-                        """
-
-                        logger.debug(f"Executing text search query: {text_search_query}")
-                        text_search_results = conn.execute(text_search_query).fetchall()
-                        logger.info(f"Found {len(text_search_results)} results from text search")
-
-                        # Process text search results
-                        for row in text_search_results:
-                            page_id, url, raw_text, tags_json = row
-                            result_tags = deserialize_tags(tags_json)
-
-                            # Calculate a relevance score based on term frequency
-                            term_count = 0
-                            for term in search_terms:
-                                if len(term) >= 3:
-                                    term_count += raw_text.lower().count(term.lower())
-
-                            # Normalize score to be between 0 and 1
-                            text_score = min(0.8, term_count / 100) if term_count > 0 else 0.5
-
-                            # Summarize text
-                            chunk_text = raw_text
-                            if len(chunk_text) > 1000:
-                                chunk_text = chunk_text[:997] + "..."
-
-                            # Try to find the context around the first search term
-                            highlight_context = None
-                            for term in search_terms:
-                                if len(term) >= 3:
-                                    term_pos = raw_text.lower().find(term.lower())
-                                    if term_pos >= 0:
-                                        start_pos = max(0, term_pos - 100)
-                                        end_pos = min(len(raw_text), term_pos + 100)
-                                        highlight_context = f"...{raw_text[start_pos:end_pos]}..."
-                                        break
-
-                            # Use highlight context if found
-                            if highlight_context:
-                                chunk_text = highlight_context
-
-                            results.append(
-                                SearchResult(
-                                    chunk_text=chunk_text,
-                                    page_id=page_id,
-                                    tags=result_tags,
-                                    score=text_score,
-                                )
-                            )
 
             logger.info(f"Returning {len(results)} search results")
             return SearchDocsResponse(results=results)
@@ -655,7 +569,7 @@ mcp = FastApiMCP(
     description="API for the Doctor web crawling and indexing system",
     describe_all_responses=True,
     describe_full_response_schema=True,
-    exclude_operations=["fetch_url"],
+    exclude_operations=["fetch_url", "job_progress"],
 )
 
 mcp.mount()
