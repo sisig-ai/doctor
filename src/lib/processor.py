@@ -2,6 +2,8 @@
 
 from typing import List, Any
 from urllib.parse import urlparse
+import asyncio
+from itertools import islice
 
 from src.lib.crawler import extract_page_text
 from src.lib.chunker import TextChunker
@@ -18,6 +20,7 @@ async def process_crawl_result(
     page_result: Any,
     job_id: str,
     tags: List[str] = None,
+    max_concurrent_embeddings: int = 5,
 ) -> str:
     """
     Process a single crawled page result through the entire pipeline.
@@ -26,6 +29,7 @@ async def process_crawl_result(
         page_result: The crawl result for the page
         job_id: The ID of the crawl job
         tags: Optional tags to associate with the page
+        max_concurrent_embeddings: Maximum number of concurrent embedding generations
 
     Returns:
         The ID of the processed page
@@ -58,9 +62,10 @@ async def process_crawl_result(
         # Extract domain from URL
         domain = urlparse(page_result.url).netloc
 
-        # Process each chunk
+        # Process chunks in parallel batches
         successful_chunks = 0
-        for chunk_text in chunks:
+
+        async def process_chunk(chunk_text):
             try:
                 # Generate embedding
                 embedding = await generate_embedding(chunk_text)
@@ -77,11 +82,24 @@ async def process_crawl_result(
 
                 # Index the vector
                 await indexer.index_vector(embedding, payload)
-                successful_chunks += 1
-
+                return True
             except Exception as chunk_error:
                 logger.error(f"Error processing chunk: {str(chunk_error)}")
-                continue
+                return False
+
+        # Process chunks in batches with limited concurrency
+        i = 0
+        while i < len(chunks):
+            # Take up to max_concurrent_embeddings chunks
+            batch_chunks = list(islice(chunks, i, i + max_concurrent_embeddings))
+            i += max_concurrent_embeddings
+
+            # Process this batch in parallel
+            results = await asyncio.gather(
+                *[process_chunk(chunk) for chunk in batch_chunks], return_exceptions=False
+            )
+
+            successful_chunks += sum(1 for result in results if result)
 
         logger.info(
             f"Successfully indexed {successful_chunks}/{len(chunks)} chunks for page {page_id}"
