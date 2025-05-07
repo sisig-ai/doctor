@@ -7,6 +7,7 @@ from src.common.models import (
     GetDocPageResponse,
     ListDocPagesResponse,
     SearchDocsResponse,
+    ListTagsResponse,
 )
 from src.common.logger import get_logger
 from src.common.db_setup import (
@@ -17,6 +18,7 @@ from src.web_service.services.document_service import (
     search_docs,
     list_doc_pages,
     get_doc_page,
+    list_tags,
 )
 
 # Get logger for this module
@@ -33,7 +35,7 @@ async def search_docs_endpoint(
     max_results: int = Query(10, description="Maximum number of results to return", ge=1, le=100),
 ):
     """
-    Search for documents using semantic search.
+    Search for documents using semantic search. Use `get_doc_page` to get the full text of a document page.
 
     Args:
         query: The search query
@@ -75,7 +77,7 @@ async def list_doc_pages_endpoint(
     tags: Optional[List[str]] = Query(None, description="Tags to filter by"),
 ):
     """
-    List available indexed pages.
+    List all available indexed pages.
 
     Args:
         page: Page number (1-based)
@@ -107,7 +109,7 @@ async def get_doc_page_endpoint(
     ending_line: int = Query(100, description="Line to view up to", ge=1),
 ):
     """
-    Get the full text of a document page.
+    Get the full text of a document page. Use `search_docs` or `list_doc_pages` to get the page IDs.
 
     Args:
         page_id: The page ID
@@ -133,6 +135,39 @@ async def get_doc_page_endpoint(
         raise
     except Exception as e:
         logger.error(f"Error retrieving document page {page_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+
+@router.get("/list_tags", response_model=ListTagsResponse, operation_id="list_tags")
+async def list_tags_endpoint(
+    search_substring: Optional[str] = Query(
+        None, description="Optional substring to filter tags (case-insensitive fuzzy matching)"
+    ),
+):
+    """
+    List all unique tags available in the document database. Use `search_docs` or `list_doc_pages` to get the page IDs using the tags.
+
+    Args:
+        search_substring: Optional substring to filter tags using case-insensitive fuzzy matching
+
+    Returns:
+        List of unique tags
+    """
+    logger.info(
+        f"API: Listing all unique document tags{' with filter: ' + search_substring if search_substring else ''}"
+    )
+
+    # Get a fresh connection for each request
+    conn = await get_duckdb_connection_with_retry()
+
+    try:
+        # Call the service function
+        response = await list_tags(conn, search_substring)
+        return response
+    except Exception as e:
+        logger.error(f"Error listing document tags: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()

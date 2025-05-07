@@ -156,3 +156,11 @@ class DeleteDocsRequest(BaseModel):
     tags: Optional[List[str]] = Field(default=None, description="Tags to filter by")
     domain: Optional[str] = Field(default=None, description="Domain substring to filter by")
     page_ids: Optional[List[str]] = Field(default=None, description="Specific page IDs to delete")
+
+
+class ListTagsResponse(BaseModel):
+    """Response model for the /list_tags endpoint."""
+
+    tags: List[str] = Field(
+        default_factory=list, description="List of all unique tags in the database"
+    )

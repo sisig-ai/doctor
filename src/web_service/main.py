@@ -76,12 +76,17 @@ def create_application() -> FastAPI:
     app.include_router(api_router)
 
     # Set up MCP
+    mcp_server_description = """
+    Search for documents using semantic search.
+    1. Use the `list_tags` endpoint to get a list of all available tags.
+    2. Use the `search_docs` endpoint to search for documents using semantic search, optionally filtered by tag.
+    3. Use the `get_doc_page` endpoint to get the full text of a document page.
+    4. You can also use the `list_doc_pages` endpoint to get a list of all available document pages.
+    """
     mcp = FastApiMCP(
         app,
         name="Doctor",
-        description="API for the Doctor web crawling and indexing system",
-        describe_all_responses=True,
-        describe_full_response_schema=True,
+        description=mcp_server_description,
         exclude_operations=["fetch_url", "job_progress", "delete_docs"],
     )
 

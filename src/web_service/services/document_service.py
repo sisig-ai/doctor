@@ -15,11 +15,83 @@ from src.common.models import (
     ListDocPagesResponse,
     SearchDocsResponse,
     SearchResult,
+    ListTagsResponse,
 )
 from src.common.logger import get_logger
 
 # Get logger for this module
 logger = get_logger(__name__)
+
+
+def levenshtein_distance(s1: str, s2: str) -> int:
+    """
+    Calculate the Levenshtein distance between two strings.
+
+    Args:
+        s1: First string
+        s2: Second string
+
+    Returns:
+        int: Edit distance between the strings
+    """
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
+
+    if len(s2) == 0:
+        return len(s1)
+
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+
+    return previous_row[-1]
+
+
+def is_fuzzy_match(s1: str, s2: str, threshold: float = 0.7) -> bool:
+    """
+    Determine if two strings are fuzzy matches based on Levenshtein distance.
+
+    Args:
+        s1: First string
+        s2: Second string
+        threshold: Similarity threshold (0.0 to 1.0)
+
+    Returns:
+        bool: True if the strings are similar enough
+    """
+    # Normalize strings
+    s1_norm = s1.lower().replace(" ", "")
+    s2_norm = s2.lower().replace(" ", "")
+
+    # Check for substring match first (faster)
+    if s1_norm in s2_norm or s2_norm in s1_norm:
+        return True
+
+    # If one string is empty, they can't be a fuzzy match
+    if not s1_norm or not s2_norm:
+        return False
+
+    # For very different length strings, it's unlikely to be a match
+    len_diff = abs(len(s1_norm) - len(s2_norm))
+    max_len = max(len(s1_norm), len(s2_norm))
+
+    # If length difference is too great, not a match
+    if len_diff / max_len > (1 - threshold):
+        return False
+
+    # Calculate Levenshtein distance
+    distance = levenshtein_distance(s1_norm, s2_norm)
+
+    # Calculate similarity as percentage (1 - normalized_distance)
+    similarity = 1 - (distance / max(len(s1_norm), len(s2_norm)))
+
+    return similarity >= threshold
 
 
 async def search_docs(
@@ -264,3 +336,62 @@ async def get_doc_page(
     logger.info(f"Returning {len(requested_lines)} lines from page {page_id}")
 
     return GetDocPageResponse(text="\n".join(requested_lines), total_lines=total_lines)
+
+
+async def list_tags(
+    conn: duckdb.DuckDBPyConnection, search_substring: Optional[str] = None
+) -> ListTagsResponse:
+    """
+    List all unique tags available in the document database.
+
+    Args:
+        conn: Connected DuckDB connection
+        search_substring: Optional substring to filter tags using case-insensitive fuzzy matching
+
+    Returns:
+        ListTagsResponse: List of unique tags
+    """
+    logger.info(
+        f"Retrieving all unique document tags{' with filter: ' + search_substring if search_substring else ''}"
+    )
+
+    # We need to extract unique tags from the JSON array in the 'tags' column
+    # This is a bit complex in SQL since we need to unnest the JSON arrays
+    try:
+        # First, we get all the tags columns which are JSON arrays as strings
+        result = conn.execute(
+            """
+            SELECT DISTINCT tags
+            FROM pages
+            WHERE tags IS NOT NULL AND tags != '[]'
+            """
+        ).fetchall()
+
+        # Set to store unique tags
+        unique_tags = set()
+
+        # Process each JSON array and extract individual tags
+        for row in result:
+            tags_json = row[0]
+            tags = deserialize_tags(tags_json)
+            for tag in tags:
+                if tag:  # Ensure we don't add empty tags
+                    unique_tags.add(tag)
+
+        # Filter tags if search_substring is provided
+        if search_substring:
+            # Use fuzzy matching to filter tags
+            filtered_tags = [tag for tag in unique_tags if is_fuzzy_match(search_substring, tag)]
+            tags_list = sorted(filtered_tags)
+            logger.info(
+                f"Found {len(tags_list)} tags fuzzy-matching '{search_substring}' from total of {len(unique_tags)} tags"
+            )
+        else:
+            # Convert to sorted list
+            tags_list = sorted(list(unique_tags))
+            logger.info(f"Found {len(tags_list)} unique tags")
+
+        return ListTagsResponse(tags=tags_list)
+    except Exception as e:
+        logger.error(f"Error retrieving tags: {str(e)}")
+        raise e
