@@ -6,9 +6,15 @@ from typing import List, Optional, Dict, Any
 import asyncio
 import redis
 from rq import Queue
+from qdrant_client.http import models as qdrant_models
 
 from src.common.config import REDIS_URI
-from src.common.db_setup import get_duckdb_connection, serialize_tags
+from src.common.db_setup import (
+    get_duckdb_connection,
+    serialize_tags,
+    get_qdrant_client,
+    QDRANT_COLLECTION_NAME,
+)
 from src.lib.crawler import crawl_url
 from src.lib.processor import process_page_batch
 from src.lib.database import update_job_status
@@ -225,3 +231,121 @@ async def _execute_pipeline(
         "pages_discovered": pages_discovered,
         "pages_crawled": pages_crawled,
     }
+
+
+def delete_docs(
+    task_id: str,
+    tags: Optional[List[str]] = None,
+    domain: Optional[str] = None,
+    page_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Delete documents from the database based on filters.
+
+    Args:
+        task_id: Unique ID for the delete task
+        tags: Optional list of tags to filter by
+        domain: Optional domain substring to filter by
+        page_ids: Optional list of specific page IDs to delete
+
+    Returns:
+        Dictionary with deletion statistics
+    """
+    logger.info(
+        f"Starting delete task {task_id} with filters: tags={tags}, domain={domain}, page_ids={page_ids}"
+    )
+
+    # Get a connection with write access
+    conn = get_duckdb_connection(read_only=False)
+    qdrant_client = get_qdrant_client()
+
+    try:
+        # Build the SQL where clause based on filters
+        conditions = []
+        params = []
+
+        if page_ids and len(page_ids) > 0:
+            placeholders = ", ".join(["?" for _ in page_ids])
+            conditions.append(f"id IN ({placeholders})")
+            params.extend(page_ids)
+
+        if domain:
+            conditions.append("domain LIKE ?")
+            params.append(f"%{domain}%")
+
+        if tags and len(tags) > 0:
+            # For each tag, check if it's in the JSON array
+            tag_conditions = []
+            for tag in tags:
+                escaped_tag = tag.replace("'", "''")  # Escape single quotes for SQL
+                tag_conditions.append(f"tags LIKE '%{escaped_tag}%'")
+
+            conditions.append(f"({' OR '.join(tag_conditions)})")
+
+        # First get the IDs of pages that will be deleted for Qdrant deletion
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+        # Get the IDs of pages that will be deleted
+        query = f"SELECT id FROM pages WHERE {where_clause}"
+        logger.debug(f"Executing query to get page IDs: {query}")
+        results = conn.execute(query, params).fetchall()
+        page_ids_to_delete = [row[0] for row in results]
+
+        # Delete from Qdrant first (vector database)
+        deleted_vectors = 0
+        if page_ids_to_delete:
+            # For each page, find and delete all its chunks from Qdrant
+            for page_id in page_ids_to_delete:
+                # Get all point IDs in Qdrant that belong to this page
+                search_filter = qdrant_models.Filter(
+                    must=[
+                        qdrant_models.FieldCondition(
+                            key="page_id",
+                            match=qdrant_models.MatchValue(value=page_id),
+                        )
+                    ]
+                )
+
+                # Find points to delete
+                points = qdrant_client.scroll(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    scroll_filter=search_filter,
+                    limit=1000,  # Increased limit to get more points in one call
+                    with_payload=False,  # We only need IDs
+                    with_vectors=False,
+                )
+
+                point_ids = [point.id for point in points[0]]
+
+                if point_ids:
+                    # Delete these points from Qdrant
+                    qdrant_client.delete(
+                        collection_name=QDRANT_COLLECTION_NAME,
+                        points_selector=qdrant_models.PointIdsList(
+                            points=point_ids,
+                        ),
+                    )
+                    deleted_vectors += len(point_ids)
+
+        # Then delete from SQL database
+        delete_query = f"DELETE FROM pages WHERE {where_clause}"
+        logger.debug(f"Executing delete query: {delete_query}")
+        cursor = conn.execute(delete_query, params)
+        deleted_pages = cursor.rowcount
+
+        # Commit the changes
+        conn.commit()
+
+        logger.info(f"Deleted {deleted_pages} pages and {deleted_vectors} vector embeddings")
+
+        return {
+            "task_id": task_id,
+            "deleted_pages": deleted_pages,
+            "deleted_vectors": deleted_vectors,
+            "page_ids": page_ids_to_delete,
+        }
+    except Exception as e:
+        logger.error(f"Error deleting documents: {str(e)}")
+        raise
+    finally:
+        conn.close()

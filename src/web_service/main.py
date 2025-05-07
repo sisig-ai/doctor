@@ -26,6 +26,7 @@ from src.common.db_setup import (
 )
 from src.common.models import (
     DocPageSummary,
+    DeleteDocsRequest,
     FetchUrlRequest,
     FetchUrlResponse,
     GetDocPageResponse,
@@ -563,13 +564,49 @@ async def get_doc_page(
         conn.close()
 
 
+@app.post("/delete_docs", status_code=204, operation_id="delete_docs")
+async def delete_docs(request: DeleteDocsRequest):
+    """
+    Delete documents from the database based on filters.
+
+    Args:
+        request: The delete request with optional filters
+            tags: Optional list of tags to filter by
+            domain: Optional domain substring to filter by
+            page_ids: Optional list of specific page IDs to delete
+
+    Returns:
+        204 No Content response
+    """
+    logger.info(
+        f"Enqueueing delete task with filters: tags={request.tags}, domain={request.domain}, page_ids={request.page_ids}"
+    )
+
+    # Generate a task ID for tracking logs
+    task_id = str(uuid.uuid4())
+
+    # Enqueue the delete task
+    queue.enqueue(
+        "src.crawl_worker.tasks.delete_docs",
+        task_id,
+        request.tags,
+        request.domain,
+        request.page_ids,
+    )
+
+    logger.info(f"Enqueued delete task with ID: {task_id}")
+
+    # Return 204 No Content
+    return None
+
+
 mcp = FastApiMCP(
     app,
     name="Doctor",
     description="API for the Doctor web crawling and indexing system",
     describe_all_responses=True,
     describe_full_response_schema=True,
-    exclude_operations=["fetch_url", "job_progress"],
+    exclude_operations=["fetch_url", "job_progress", "delete_docs"],
 )
 
 mcp.mount()

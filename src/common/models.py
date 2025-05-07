@@ -148,3 +148,11 @@ class Chunk(BaseModel):
     domain: str
     tags: List[str] = Field(default_factory=list)
     embedding: List[float]
+
+
+class DeleteDocsRequest(BaseModel):
+    """Request model for the /delete_docs endpoint."""
+
+    tags: Optional[List[str]] = Field(default=None, description="Tags to filter by")
+    domain: Optional[str] = Field(default=None, description="Domain substring to filter by")
+    page_ids: Optional[List[str]] = Field(default=None, description="Specific page IDs to delete")
