@@ -1,6 +1,7 @@
 """Database setup and connection utilities for the Doctor project."""
 
 import os
+import asyncio
 from typing import Optional, List
 import json
 
@@ -229,6 +230,91 @@ def init_databases(read_only: bool = False) -> None:
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         raise
+
+
+async def get_qdrant_client_with_retry(
+    max_attempts: int = 3, retry_delay: float = 0.1
+) -> QdrantClient:
+    """
+    Get a Qdrant client with retry logic.
+
+    Args:
+        max_attempts: Maximum number of connection attempts
+        retry_delay: Initial delay between retries (doubles after each attempt)
+
+    Returns:
+        QdrantClient: Connected Qdrant client
+
+    Raises:
+        Exception: If connection fails after all retries
+    """
+    attempts = 0
+    last_error = None
+
+    while attempts < max_attempts:
+        attempts += 1
+        try:
+            client = get_qdrant_client()
+            # Verify the connection works
+            ensure_qdrant_collection(client)
+            return client
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Qdrant connection attempt {attempts}/{max_attempts} failed: {str(e)}")
+            if attempts < max_attempts:
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+
+    # If we get here, all attempts failed
+    logger.error(f"Failed to connect to Qdrant after {max_attempts} attempts")
+    raise last_error or Exception("Failed to connect to Qdrant")
+
+
+async def get_duckdb_connection_with_retry(
+    max_attempts: int = 3, retry_delay: float = 0.1
+) -> duckdb.DuckDBPyConnection:
+    """
+    Get a DuckDB connection with retry logic.
+
+    Args:
+        max_attempts: Maximum number of connection attempts
+        retry_delay: Initial delay between retries (doubles after each attempt)
+
+    Returns:
+        duckdb.DuckDBPyConnection: Connected DuckDB connection
+
+    Raises:
+        Exception: If connection fails after all retries
+    """
+    attempts = 0
+    last_error = None
+    conn = None
+
+    while attempts < max_attempts:
+        attempts += 1
+        try:
+            # Get a fresh read-only connection each time
+            conn = get_read_only_connection()
+            # Verify the connection works with a simple query
+            conn.execute("SELECT 1").fetchone()
+            return conn
+        except Exception as e:
+            last_error = e
+            logger.warning(f"DuckDB connection attempt {attempts}/{max_attempts} failed: {str(e)}")
+            # Clean up potentially broken connection
+            if conn:
+                try:
+                    conn.close()
+                except Exception as close_err:
+                    logger.warning(f"Error closing connection during error handling: {close_err}")
+
+            if attempts < max_attempts:
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+
+    # If we get here, all attempts failed
+    logger.error(f"Failed to connect to DuckDB after {max_attempts} attempts")
+    raise last_error or Exception("Failed to connect to DuckDB")
 
 
 if __name__ == "__main__":
