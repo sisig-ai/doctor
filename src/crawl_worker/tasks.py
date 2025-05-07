@@ -274,12 +274,7 @@ def delete_docs(
             params.append(f"%{domain}%")
 
         if tags and len(tags) > 0:
-            # For each tag, check if it's in the JSON array
-            tag_conditions = []
-            for tag in tags:
-                escaped_tag = tag.replace("'", "''")  # Escape single quotes for SQL
-                tag_conditions.append(f"tags LIKE '%{escaped_tag}%'")
-
+            tag_conditions = [f"json_contains(tags, '\"{tag}\"')" for tag in tags]
             conditions.append(f"({' OR '.join(tag_conditions)})")
 
         # First get the IDs of pages that will be deleted for Qdrant deletion
