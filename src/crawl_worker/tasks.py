@@ -274,7 +274,12 @@ def delete_docs(
             params.append(f"%{domain}%")
 
         if tags and len(tags) > 0:
-            tag_conditions = [f"json_contains(tags, '\"{tag}\"')" for tag in tags]
+            tag_conditions = []
+            for tag in tags:
+                # Format the tag for JSON contains - note we need quotes around the value
+                # First parameter is the haystack (tags), second is the needle (our tag)
+                tag_conditions.append(f"json_valid(tags) AND json_contains(tags, '\"{tag}\"')")
+
             conditions.append(f"({' OR '.join(tag_conditions)})")
 
         # First get the IDs of pages that will be deleted for Qdrant deletion
