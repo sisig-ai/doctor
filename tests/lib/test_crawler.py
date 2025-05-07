@@ -51,10 +51,14 @@ def test_extract_page_text_with_markdown(sample_crawl_result):
 def test_extract_page_text_with_extracted_content():
     """Test extracting text from a crawl result with extracted content."""
     # Create a mock result with only extracted content
+    mock_markdown = MagicMock()
+    mock_markdown.fit_markdown = "Example Page. This is some example content."
+
     mock_result = MagicMock(
         url="https://example.com",
+        markdown=mock_markdown,
         _markdown=None,
-        extracted_content="Example Page. This is some example content.",
+        extracted_content="Fallback content that should not be used",
         html="<html>...</html>",
     )
 
@@ -67,8 +71,14 @@ def test_extract_page_text_with_html_only():
     """Test extracting text from a crawl result with only HTML."""
     # Create a mock result with only HTML
     html_content = "<html><body><h1>Example</h1></body></html>"
+
+    # Create mock with no markdown or extracted content, only HTML
     mock_result = MagicMock(
-        url="https://example.com", _markdown=None, extracted_content=None, html=html_content
+        url="https://example.com",
+        markdown=None,
+        _markdown=None,
+        extracted_content=None,
+        html=html_content,
     )
 
     text = extract_page_text(mock_result)

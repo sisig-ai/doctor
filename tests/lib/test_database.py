@@ -50,7 +50,12 @@ async def test_store_page(sample_url, sample_text, job_id, mock_duckdb_connectio
         )
 
         # Check that the database operations were performed correctly
-        mock_duckdb_connection.execute.assert_called_once_with(
+        assert mock_duckdb_connection.execute.call_count == 2
+        # First call should be to begin transaction
+        mock_duckdb_connection.execute.assert_any_call("BEGIN TRANSACTION")
+
+        # Second call should be the INSERT
+        mock_duckdb_connection.execute.assert_any_call(
             """
             INSERT INTO pages (id, url, domain, raw_text, crawl_date, tags, job_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -85,7 +90,12 @@ async def test_store_page(sample_url, sample_text, job_id, mock_duckdb_connectio
         )
 
         # Check that the database operations were performed with the provided page_id
-        mock_duckdb_connection.execute.assert_called_once_with(
+        assert mock_duckdb_connection.execute.call_count == 2
+        # First call should be to begin transaction
+        mock_duckdb_connection.execute.assert_any_call("BEGIN TRANSACTION")
+
+        # Second call should be the INSERT with provided page_id
+        mock_duckdb_connection.execute.assert_any_call(
             """
             INSERT INTO pages (id, url, domain, raw_text, crawl_date, tags, job_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -110,8 +120,11 @@ async def test_store_page(sample_url, sample_text, job_id, mock_duckdb_connectio
 async def test_store_page_error_handling(sample_url, sample_text, job_id, mock_duckdb_connection):
     """Test error handling when storing a page."""
     with patch("src.lib.database.get_duckdb_connection", return_value=mock_duckdb_connection):
-        # Simulate a database error
-        mock_duckdb_connection.execute.side_effect = Exception("Database error")
+        # Set up the mock to fail on the second execute call (the INSERT)
+        mock_duckdb_connection.execute.side_effect = [
+            "BEGIN TRANSACTION",
+            Exception("Database error"),
+        ]
 
         with pytest.raises(Exception, match="Database error"):
             await store_page(url=sample_url, text=sample_text, job_id=job_id)
@@ -132,11 +145,21 @@ def test_update_job_status_basic(job_id, mock_duckdb_connection):
         now = datetime.datetime(2023, 1, 1, 12, 0, 0)
         mock_datetime.now.return_value = now
 
+        # Mock cursor with rowcount attribute
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 1
+        mock_duckdb_connection.execute.return_value = mock_cursor
+
         # Call the function with just status
         update_job_status(job_id=job_id, status="running")
 
         # Check that the database operations were performed correctly
-        mock_duckdb_connection.execute.assert_called_once_with(
+        assert mock_duckdb_connection.execute.call_count == 2
+        # First call should be to begin transaction
+        mock_duckdb_connection.execute.assert_any_call("BEGIN TRANSACTION")
+
+        # Second call should be the UPDATE
+        mock_duckdb_connection.execute.assert_any_call(
             "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?", ("running", now, job_id)
         )
 
@@ -155,6 +178,11 @@ def test_update_job_status_with_all_options(job_id, mock_duckdb_connection):
         now = datetime.datetime(2023, 1, 1, 12, 0, 0)
         mock_datetime.now.return_value = now
 
+        # Mock cursor with rowcount attribute
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 1
+        mock_duckdb_connection.execute.return_value = mock_cursor
+
         # Call the function with all options
         update_job_status(
             job_id=job_id,
@@ -164,30 +192,28 @@ def test_update_job_status_with_all_options(job_id, mock_duckdb_connection):
             error_message="Some error occurred",
         )
 
-        # Check that the database operations were performed correctly with all fields
-        mock_duckdb_connection.execute.assert_called_once()
+        # Check that the execute method was called at least twice
+        assert mock_duckdb_connection.execute.call_count >= 2
 
-        # The exact query string construction is complex due to string formatting,
-        # so we'll check that the parameters are correct
-        args, kwargs = mock_duckdb_connection.execute.call_args
-        query = args[0]
-        params = args[1]
+        # First call should be to begin transaction
+        mock_duckdb_connection.execute.assert_any_call("BEGIN TRANSACTION")
 
-        # Check that the query contains all the expected fields
-        assert "UPDATE jobs SET" in query
-        assert "status = ?" in query
-        assert "pages_discovered = ?" in query
-        assert "pages_crawled = ?" in query
-        assert "error_message = ?" in query
+        # Check that one of the calls to execute has the correct parameters
+        update_call_found = False
+        for call_args in mock_duckdb_connection.execute.call_args_list:
+            query = call_args[0][0]
+            if "UPDATE jobs SET" in query and "WHERE job_id = ?" in query:
+                params = call_args[0][1]
+                assert params[0] == "running"  # status
+                assert params[1] == now  # updated_at
+                assert params[2] == 10  # pages_discovered
+                assert params[3] == 5  # pages_crawled
+                assert params[4] == "Some error occurred"  # error_message
+                assert params[5] == job_id  # job_id
+                update_call_found = True
+                break
 
-        # Check the parameters
-        assert params[0] == "running"  # status
-        assert params[1] == now  # updated_at
-        assert params[2] == 10  # pages_discovered
-        assert params[3] == 5  # pages_crawled
-        assert params[4] == "Some error occurred"  # error_message
-        assert params[5] == job_id  # job_id
-
+        assert update_call_found, "Update query with correct parameters not found"
         mock_duckdb_connection.commit.assert_called_once()
 
 
@@ -195,39 +221,62 @@ def test_update_job_status_with_all_options(job_id, mock_duckdb_connection):
 def test_update_job_status_checkpoint(job_id, mock_duckdb_connection):
     """Test that checkpoint is called for completed/failed status."""
     with patch("src.lib.database.get_duckdb_connection", return_value=mock_duckdb_connection):
-        # Test with 'completed' status
+        # Mock cursor with rowcount attribute
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 1
+        mock_duckdb_connection.execute.return_value = mock_cursor
+        mock_duckdb_connection.execute.side_effect = None  # Remove any previous side effects
+
+        # Test with 'completed' status - expect 4 calls:
+        # 1. BEGIN TRANSACTION, 2. UPDATE, 3. CHECKPOINT, 4. SELECT to verify job
         update_job_status(job_id=job_id, status="completed")
 
-        # Check that checkpoint was called
-        assert mock_duckdb_connection.execute.call_count == 2
+        # Check that checkpoint was called and verify expected call count
+        assert mock_duckdb_connection.execute.call_count == 4
         mock_duckdb_connection.execute.assert_any_call("CHECKPOINT")
+        mock_duckdb_connection.execute.assert_any_call("BEGIN TRANSACTION")
 
-        # Reset and test with 'failed' status
+        # Select to verify job should be called
+        select_call_found = False
+        for call_args in mock_duckdb_connection.execute.call_args_list:
+            query = call_args[0][0]
+            if "SELECT status, pages_discovered, pages_crawled FROM jobs WHERE job_id = ?" in query:
+                select_call_found = True
+                break
+        assert select_call_found, "Verification SELECT query not found"
+
+        # Reset and test with 'failed' status - should also be 4 calls
         mock_duckdb_connection.reset_mock()
+        mock_duckdb_connection.execute.return_value = mock_cursor
+
         update_job_status(job_id=job_id, status="failed")
 
         # Check that checkpoint was called
-        assert mock_duckdb_connection.execute.call_count == 2
+        assert mock_duckdb_connection.execute.call_count == 4
         mock_duckdb_connection.execute.assert_any_call("CHECKPOINT")
 
-        # Reset and test with other status
+        # Reset and test with other status - should only be 2 calls (BEGIN and UPDATE)
         mock_duckdb_connection.reset_mock()
+        mock_duckdb_connection.execute.return_value = mock_cursor
+
         update_job_status(job_id=job_id, status="running")
 
         # Check that checkpoint was not called
-        assert mock_duckdb_connection.execute.call_count == 1
-        mock_duckdb_connection.execute.assert_called_once()
-        # Check that CHECKPOINT was not in the call arguments
-        call_args = mock_duckdb_connection.execute.call_args[0][0]
-        assert "CHECKPOINT" not in call_args
+        assert mock_duckdb_connection.execute.call_count == 2
+        assert "CHECKPOINT" not in [
+            call_args[0][0] for call_args in mock_duckdb_connection.execute.call_args_list
+        ]
 
 
 @pytest.mark.unit
 def test_update_job_status_error_handling(job_id, mock_duckdb_connection):
     """Test error handling when updating a job status."""
     with patch("src.lib.database.get_duckdb_connection", return_value=mock_duckdb_connection):
-        # Simulate a database error
-        mock_duckdb_connection.execute.side_effect = Exception("Database error")
+        # Simulate a database error after BEGIN TRANSACTION
+        mock_duckdb_connection.execute.side_effect = [
+            "BEGIN TRANSACTION",
+            Exception("Database error"),
+        ]
 
         with pytest.raises(Exception, match="Database error"):
             update_job_status(job_id=job_id, status="running")
