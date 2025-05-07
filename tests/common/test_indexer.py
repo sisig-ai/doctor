@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 import uuid
 
-from src.lib.indexer import VectorIndexer
+from src.common.indexer import VectorIndexer
 
 
 @pytest.fixture
@@ -23,8 +23,8 @@ def test_vector_indexer_initialization():
     """Test VectorIndexer initialization."""
     # Test with default collection name
     with (
-        patch("src.lib.indexer.get_qdrant_client") as mock_get_client,
-        patch("src.lib.indexer.QDRANT_COLLECTION_NAME", "default_collection"),
+        patch("src.common.indexer.get_qdrant_client") as mock_get_client,
+        patch("src.common.indexer.QDRANT_COLLECTION_NAME", "default_collection"),
     ):
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
@@ -39,7 +39,7 @@ def test_vector_indexer_initialization():
         assert indexer.collection_name == "default_collection"
 
     # Test with custom collection name
-    with patch("src.lib.indexer.get_qdrant_client") as mock_get_client:
+    with patch("src.common.indexer.get_qdrant_client") as mock_get_client:
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
 
@@ -55,9 +55,9 @@ def test_vector_indexer_initialization():
 async def test_index_vector(sample_embedding, mock_qdrant_client):
     """Test indexing a single vector."""
     with (
-        patch("src.lib.indexer.get_qdrant_client", return_value=mock_qdrant_client),
+        patch("src.common.indexer.get_qdrant_client", return_value=mock_qdrant_client),
         patch(
-            "src.lib.indexer.uuid.uuid4",
+            "src.common.indexer.uuid.uuid4",
             return_value=uuid.UUID("12345678-1234-5678-1234-567812345678"),
         ),
     ):
@@ -113,7 +113,7 @@ async def test_index_vector_with_empty_vector():
 @pytest.mark.async_test
 async def test_index_vector_error_handling(sample_embedding, mock_qdrant_client):
     """Test error handling when indexing a vector."""
-    with patch("src.lib.indexer.get_qdrant_client", return_value=mock_qdrant_client):
+    with patch("src.common.indexer.get_qdrant_client", return_value=mock_qdrant_client):
         # Simulate a client error
         mock_qdrant_client.upsert.side_effect = Exception("Client error")
 
@@ -128,9 +128,9 @@ async def test_index_vector_error_handling(sample_embedding, mock_qdrant_client)
 async def test_index_batch(sample_embedding, mock_qdrant_client):
     """Test indexing a batch of vectors."""
     with (
-        patch("src.lib.indexer.get_qdrant_client", return_value=mock_qdrant_client),
+        patch("src.common.indexer.get_qdrant_client", return_value=mock_qdrant_client),
         patch(
-            "src.lib.indexer.uuid.uuid4",
+            "src.common.indexer.uuid.uuid4",
             side_effect=[
                 uuid.UUID("12345678-1234-5678-1234-567812345678"),
                 uuid.UUID("87654321-8765-4321-8765-432187654321"),
@@ -231,7 +231,7 @@ async def test_index_batch_validation():
 @pytest.mark.async_test
 async def test_search(sample_embedding, mock_qdrant_client):
     """Test searching for similar vectors."""
-    with patch("src.lib.indexer.get_qdrant_client", return_value=mock_qdrant_client):
+    with patch("src.common.indexer.get_qdrant_client", return_value=mock_qdrant_client):
         # Mock search results
         search_results = [
             {"id": "id1", "score": 0.95, "payload": {"text": "Text 1"}},
@@ -274,7 +274,7 @@ async def test_search(sample_embedding, mock_qdrant_client):
 @pytest.mark.async_test
 async def test_search_error_handling(sample_embedding, mock_qdrant_client):
     """Test error handling when searching for vectors."""
-    with patch("src.lib.indexer.get_qdrant_client", return_value=mock_qdrant_client):
+    with patch("src.common.indexer.get_qdrant_client", return_value=mock_qdrant_client):
         # Simulate a client error
         mock_qdrant_client.search.side_effect = Exception("Search error")
 
@@ -282,3 +282,15 @@ async def test_search_error_handling(sample_embedding, mock_qdrant_client):
 
         with pytest.raises(Exception, match="Search error"):
             await indexer.search(sample_embedding)
+
+
+# Sample embedding fixture (if not already defined globally)
+@pytest.fixture
+def sample_embedding():
+    return [0.1, 0.2, 0.3, 0.4, 0.5]
+
+
+# Add conftest.py or global fixture for async_test if needed
+# For example, using pytest-asyncio, this might already be handled.
+# Ensure your pytest setup supports async tests correctly.
+# Consider adding an explicit `event_loop` fixture if needed.

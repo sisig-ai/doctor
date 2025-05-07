@@ -2,11 +2,13 @@
 
 from fastapi import APIRouter, Depends, status
 from rq import Queue
+import redis
 
+from src.common.config import REDIS_URI
 from src.common.models import (
     DeleteDocsRequest,
 )
-from src.lib.logger import get_logger
+from src.common.logger import get_logger
 from src.web_service.services.admin_service import (
     delete_docs,
 )
@@ -20,7 +22,8 @@ router = APIRouter(tags=["admin"])
 
 @router.post("/delete_docs", status_code=status.HTTP_204_NO_CONTENT, operation_id="delete_docs")
 async def delete_docs_endpoint(
-    request: DeleteDocsRequest, queue: Queue = Depends(lambda: Queue("worker"))
+    request: DeleteDocsRequest,
+    queue: Queue = Depends(lambda: Queue("worker", connection=redis.from_url(REDIS_URI))),
 ) -> None:
     """Deletes documents from the database based on filters.
 

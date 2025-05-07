@@ -8,9 +8,9 @@ from itertools import islice
 from src.lib.crawler import extract_page_text
 from src.lib.chunker import TextChunker
 from src.lib.embedder import generate_embedding
-from src.lib.indexer import VectorIndexer
+from src.common.indexer import VectorIndexer  # Updated import
 from src.lib.database import store_page, update_job_status
-from src.lib.logger import get_logger
+from src.common.logger import get_logger
 
 # Configure logging
 logger = get_logger(__name__)

@@ -8,7 +8,7 @@ from src.common.models import (
     FetchUrlResponse,
     JobProgressResponse,
 )
-from src.lib.logger import get_logger
+from src.common.logger import get_logger
 from rq import Queue
 
 # Get logger for this module

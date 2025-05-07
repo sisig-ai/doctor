@@ -15,7 +15,7 @@ from src.common.config import (
 from src.common.db_setup import (
     init_databases,
 )
-from src.lib.logger import get_logger
+from src.common.logger import get_logger
 from src.web_service.api import api_router
 from mcp.server.session import ServerSession
 
@@ -40,7 +40,6 @@ async def _received_request(self, *args, **kwargs):
 ServerSession._received_request = _received_request
 
 
-@asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifespan context manager for the FastAPI application.

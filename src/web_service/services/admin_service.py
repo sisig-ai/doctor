@@ -4,7 +4,7 @@ import uuid
 from typing import List, Optional
 
 from rq import Queue
-from src.lib.logger import get_logger
+from src.common.logger import get_logger
 
 # Get logger for this module
 logger = get_logger(__name__)

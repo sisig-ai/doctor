@@ -16,9 +16,9 @@ from src.common.db_setup import (
     QDRANT_COLLECTION_NAME,
 )
 from src.lib.crawler import crawl_url
-from src.lib.processor import process_page_batch
+from src.common.processor import process_page_batch
 from src.lib.database import update_job_status
-from src.lib.logger import get_logger
+from src.common.logger import get_logger
 
 # Get logger for this module
 logger = get_logger(__name__)

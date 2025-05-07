@@ -7,7 +7,7 @@ from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 from crawl4ai.content_filter_strategy import PruningContentFilter
 
-from src.lib.logger import get_logger
+from src.common.logger import get_logger
 
 # Configure logging
 logger = get_logger(__name__)

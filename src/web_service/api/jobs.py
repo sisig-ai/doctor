@@ -3,13 +3,15 @@
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
 from rq import Queue
+import redis
 
+from src.common.config import REDIS_URI
 from src.common.models import (
     FetchUrlRequest,
     FetchUrlResponse,
     JobProgressResponse,
 )
-from src.lib.logger import get_logger
+from src.common.logger import get_logger
 from src.common.db_setup import (
     get_duckdb_connection_with_retry,
 )
@@ -28,7 +30,8 @@ router = APIRouter(tags=["jobs"])
 
 @router.post("/fetch_url", response_model=FetchUrlResponse, operation_id="fetch_url")
 async def fetch_url_endpoint(
-    request: FetchUrlRequest, queue: Queue = Depends(lambda: Queue("worker"))
+    request: FetchUrlRequest,
+    queue: Queue = Depends(lambda: Queue("worker", connection=redis.from_url(REDIS_URI))),
 ):
     """
     Initiate a fetch job to crawl a website.

@@ -1,13 +1,13 @@
 """Text chunking functionality using LangChain."""
 
-import logging
 from typing import List
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.common.config import CHUNK_SIZE, CHUNK_OVERLAP
+from src.common.logger import get_logger
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class TextChunker:

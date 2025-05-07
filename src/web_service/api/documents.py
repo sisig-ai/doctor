@@ -8,7 +8,7 @@ from src.common.models import (
     ListDocPagesResponse,
     SearchDocsResponse,
 )
-from src.lib.logger import get_logger
+from src.common.logger import get_logger
 from src.common.db_setup import (
     get_duckdb_connection_with_retry,
     get_qdrant_client_with_retry,

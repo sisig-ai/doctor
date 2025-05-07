@@ -5,7 +5,7 @@ from rq import Worker
 
 from src.common.config import REDIS_URI, check_config
 from src.common.db_setup import init_databases
-from src.lib.logger import get_logger
+from src.common.logger import get_logger
 
 # Get logger for this module
 logger = get_logger(__name__)

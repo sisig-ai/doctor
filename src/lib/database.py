@@ -1,15 +1,15 @@
 """Database operations for storing crawled pages and job information."""
 
-import logging
 import uuid
 import datetime
 from typing import List, Optional
 from urllib.parse import urlparse
 
 from src.common.db_setup import get_duckdb_connection, serialize_tags
+from src.common.logger import get_logger
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 async def store_page(

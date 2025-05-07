@@ -1,13 +1,13 @@
 """Text embedding functionality using LiteLLM."""
 
-import logging
 from typing import List
 
 import litellm
 from src.common.config import EMBEDDING_MODEL
+from src.common.logger import get_logger
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 async def generate_embedding(text: str, model: str = None, timeout: int = 30) -> List[float]:
