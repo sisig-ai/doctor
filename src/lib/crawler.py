@@ -1,16 +1,17 @@
 """Web crawling functionality using crawl4ai."""
 
-import logging
 from typing import List, Any
 
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
 from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 
+from src.lib.logger import get_logger
+
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
-async def crawl_url(url: str, max_pages: int = 100, max_depth: int = 3) -> List[Any]:
+async def crawl_url(url: str, max_pages: int = 100, max_depth: int = 2) -> List[Any]:
     """
     Crawl a URL and return the results.
 
@@ -24,25 +25,22 @@ async def crawl_url(url: str, max_pages: int = 100, max_depth: int = 3) -> List[
     """
     logger.info(f"Starting crawl for URL: {url} with max_pages={max_pages}")
 
+    config = CrawlerRunConfig(
+        deep_crawl_strategy=BFSDeepCrawlStrategy(
+            max_depth=max_depth,
+            max_pages=max_pages,
+            logger=get_logger("crawl4ai"),
+            include_external=False,
+        ),
+        verbose=True,
+    )
+
     # Initialize the crawler
     async with AsyncWebCrawler() as crawler:
-        # Configure the crawl run for deep crawling
-        config = CrawlerRunConfig(
-            deep_crawl_strategy=BFSDeepCrawlStrategy(
-                max_pages=max_pages,
-                max_depth=max_depth,
-                # include_external=False, # Optionally keep crawl within the same domain
-            ),
-            # Define other parameters if needed, e.g., scraping_strategy
-            # verbose=True # Useful for more detailed crawl4ai logging
-        )
-
         # Crawl the URL - returns a list of CrawlResult objects when deep crawling
         crawl_results = await crawler.arun(url=url, config=config)
-
         logger.info(f"Deep crawl discovered {len(crawl_results)} pages")
-
-        return crawl_results
+    return crawl_results
 
 
 def extract_page_text(page_result: Any) -> str:

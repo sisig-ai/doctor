@@ -1,6 +1,5 @@
 """Page processing pipeline combining crawling, chunking, embedding, and indexing."""
 
-import logging
 from typing import List, Any
 from urllib.parse import urlparse
 
@@ -9,9 +8,10 @@ from src.lib.chunker import TextChunker
 from src.lib.embedder import generate_embedding
 from src.lib.indexer import VectorIndexer
 from src.lib.database import store_page, update_job_status
+from src.lib.logger import get_logger
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 async def process_crawl_result(

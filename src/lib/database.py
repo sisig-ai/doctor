@@ -42,8 +42,13 @@ async def store_page(
 
     # Get DuckDB connection
     conn = get_duckdb_connection()
+    transaction_active = False
 
     try:
+        # Begin transaction explicitly
+        conn.execute("BEGIN TRANSACTION")
+        transaction_active = True
+
         # Store page data
         conn.execute(
             """
@@ -63,12 +68,17 @@ async def store_page(
 
         # Commit the transaction
         conn.commit()
+        transaction_active = False
         logger.debug(f"Successfully stored page {page_id} in database")
 
         return page_id
 
     except Exception as e:
-        conn.rollback()
+        if transaction_active:
+            try:
+                conn.rollback()
+            except Exception as rollback_error:
+                logger.warning(f"Rollback failed: {str(rollback_error)}")
         logger.error(f"Database error storing page: {str(e)}")
         raise
 
@@ -93,12 +103,20 @@ def update_job_status(
         pages_crawled: Optional number of pages crawled
         error_message: Optional error message if the job failed
     """
-    logger.debug(f"Updating job {job_id} status to {status}")
+    logger.info(
+        f"Updating job {job_id} status to {status}, discovered={pages_discovered}, crawled={pages_crawled}"
+    )
 
     # Get DuckDB connection
     conn = get_duckdb_connection()
+    transaction_active = False
+    update_successful = False
 
     try:
+        # Begin transaction explicitly
+        conn.execute("BEGIN TRANSACTION")
+        transaction_active = True
+
         # Build the SQL query dynamically based on which fields are provided
         query_parts = ["UPDATE jobs SET status = ?, updated_at = ?"]
         params = [status, datetime.datetime.now()]
@@ -119,24 +137,61 @@ def update_job_status(
         params.append(job_id)
 
         # Execute the query
-        conn.execute(query, tuple(params))
+        cursor = conn.execute(query, tuple(params))
+
+        # Verify the update was applied by checking the row count
+        rows_affected = cursor.rowcount
+        if rows_affected == 0:
+            logger.warning(
+                f"Job status update for {job_id} didn't affect any rows. Job may not exist."
+            )
+        else:
+            logger.debug(f"Job status update affected {rows_affected} rows")
+            update_successful = True
 
         # Commit the transaction
         conn.commit()
+        transaction_active = False
 
         # Periodically force a checkpoint to ensure changes are persisted
         # Only do this for important status transitions
         if status in ["completed", "failed"]:
             try:
                 conn.execute("CHECKPOINT")
-                logger.debug(f"Forced checkpoint after updating job {job_id} to {status}")
+                logger.info(f"Forced checkpoint after updating job {job_id} to {status}")
             except Exception as e:
                 logger.warning(f"Failed to checkpoint: {str(e)}")
 
-        logger.debug(f"Successfully updated job {job_id} status")
+        if update_successful:
+            logger.info(f"Successfully updated job {job_id} status to {status}")
+
+        # Verify the job status was updated correctly by reading it back
+        if status in ["completed", "failed"]:
+            try:
+                job_data = conn.execute(
+                    "SELECT status, pages_discovered, pages_crawled FROM jobs WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+
+                if job_data:
+                    current_status, current_discovered, current_crawled = job_data
+                    logger.info(
+                        f"Job {job_id} current state: status={current_status}, "
+                        f"discovered={current_discovered}, crawled={current_crawled}"
+                    )
+                else:
+                    logger.warning(
+                        f"Could not verify job {job_id} status - job not found in database"
+                    )
+            except Exception as verify_error:
+                logger.warning(f"Error verifying job status: {str(verify_error)}")
 
     except Exception as e:
-        conn.rollback()
+        if transaction_active:
+            try:
+                conn.rollback()
+            except Exception as rollback_error:
+                logger.warning(f"Rollback failed: {str(rollback_error)}")
         logger.error(f"Database error updating job status: {str(e)}")
         raise
 

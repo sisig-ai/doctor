@@ -1,7 +1,5 @@
 """Task definitions for the Doctor Crawl Worker."""
 
-import logging
-import uuid
 import datetime
 from typing import List, Optional, Dict, Any
 
@@ -14,35 +12,29 @@ from src.common.db_setup import get_duckdb_connection, serialize_tags
 from src.lib.crawler import crawl_url
 from src.lib.processor import process_page_batch
 from src.lib.database import update_job_status
+from src.lib.logger import get_logger
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Get logger for this module
+logger = get_logger(__name__)
 
 
 def create_job(
-    url: str, tags: Optional[List[str]] = None, max_pages: int = 100, job_id: Optional[str] = None
+    url: str, job_id: str, tags: Optional[List[str]] = None, max_pages: int = 100
 ) -> str:
     """
     Create a new crawl job in the database.
 
     Args:
         url: The URL to start crawling from
+        job_id: Pre-generated job ID
         tags: Optional tags to associate with the crawled pages
         max_pages: Maximum number of pages to crawl
-        job_id: Optional pre-generated job ID
 
     Returns:
         The job ID
     """
     if tags is None:
         tags = []
-
-    # Use provided job_id or generate a new one
-    if job_id is None:
-        job_id = str(uuid.uuid4())
 
     logger.info(f"Creating new job {job_id} for URL: {url}, max pages: {max_pages}")
 
@@ -89,24 +81,11 @@ def create_job(
 
         # Enqueue the crawl task
         redis_conn = redis.from_url(REDIS_URI)
-        default_queue = Queue("default", connection=redis_conn)
-
-        # Clean up the job request from Redis if it exists
-        job_request_key = f"job_request:{job_id}"
-        if redis_conn.exists(job_request_key):
-            logger.info(f"Cleaning up job request {job_id} from Redis")
-            redis_conn.delete(job_request_key)
+        queue = Queue("worker", connection=redis_conn)
 
         # Enqueue the crawl task
         logger.info(f"Enqueueing crawl task for job {job_id}")
-        default_queue.enqueue(
-            perform_crawl,
-            job_id,  # Positional argument
-            url=url,
-            tags=tags,
-            max_pages=max_pages,
-            job_timeout="1h",  # Set a reasonable timeout
-        )
+        queue.enqueue("src.crawl_worker.tasks.perform_crawl", job_id, url, tags, max_pages)
 
         logger.info(f"Enqueued crawl task for job {job_id}")
 
@@ -177,13 +156,22 @@ async def _execute_pipeline(
     """
     logger.info(f"Job {job_id}: Starting pipeline for URL: {url} with max_pages={max_pages}")
 
+    # Update job status to indicate crawling has started
+    update_job_status(
+        job_id=job_id,
+        status="running",
+        pages_discovered=0,
+        pages_crawled=0,
+    )
+
     # Step 1: Crawl the URL
+    logger.info(f"Job {job_id}: Beginning crawling phase from URL: {url}")
     crawl_results = await crawl_url(url, max_pages=max_pages)
     pages_discovered = len(crawl_results)
 
     logger.info(f"Job {job_id}: Crawl discovered {pages_discovered} pages")
 
-    # Update job progress
+    # Update job progress after crawl phase
     update_job_status(
         job_id=job_id,
         status="running",
@@ -193,6 +181,8 @@ async def _execute_pipeline(
 
     # Step 2: Process the crawled pages
     if crawl_results:
+        logger.info(f"Job {job_id}: Beginning processing phase for {pages_discovered} pages")
+
         # Process the pages in batches
         processed_page_ids = await process_page_batch(
             page_results=crawl_results,
@@ -204,11 +194,31 @@ async def _execute_pipeline(
         logger.info(
             f"Job {job_id}: Successfully processed {pages_crawled}/{pages_discovered} pages"
         )
+
+        # Final update before completing
+        update_job_status(
+            job_id=job_id,
+            status="running",
+            pages_discovered=pages_discovered,
+            pages_crawled=pages_crawled,
+        )
     else:
         logger.warning(f"Job {job_id}: No pages were discovered during crawl")
         pages_crawled = 0
 
+        # Update status for empty crawl
+        update_job_status(
+            job_id=job_id,
+            status="running",
+            pages_discovered=0,
+            pages_crawled=0,
+            error_message="No pages were discovered during crawl",
+        )
+
     # Return final status
+    logger.info(
+        f"Job {job_id}: Pipeline completed with {pages_crawled}/{pages_discovered} pages processed"
+    )
     return {
         "job_id": job_id,
         "status": "completed",

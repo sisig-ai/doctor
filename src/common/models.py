@@ -2,13 +2,13 @@
 
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 
 
 class FetchUrlRequest(BaseModel):
     """Request model for the /fetch_url endpoint."""
 
-    url: HttpUrl = Field(..., description="The URL to start indexing from")
+    url: str = Field(..., description="The URL to start indexing from")
     tags: Optional[List[str]] = Field(default=None, description="Tags to assign this website")
     max_pages: int = Field(default=100, description="How many pages to index", ge=1, le=1000)
 

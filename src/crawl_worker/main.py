@@ -1,22 +1,14 @@
 """Main module for the Doctor Crawl Worker."""
 
-import logging
 import redis
-from rq import Worker, Queue
+from rq import Worker
 
 from src.common.config import REDIS_URI, check_config
 from src.common.db_setup import init_databases
+from src.lib.logger import get_logger
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-# Define queue names
-DEFAULT_QUEUE = "default"
-HIGH_QUEUE = "high"
-LOW_QUEUE = "low"
+# Get logger for this module
+logger = get_logger(__name__)
 
 
 def main():
@@ -33,13 +25,9 @@ def main():
     logger.info(f"Connecting to Redis at {REDIS_URI}")
     redis_conn = redis.from_url(REDIS_URI)
 
-    # Define queues to listen on
-    listen = [HIGH_QUEUE, DEFAULT_QUEUE, LOW_QUEUE]
-    queues = list(map(lambda name: Queue(name, connection=redis_conn), listen))
-
     # Start worker
-    logger.info(f"Starting worker, listening on queues: {', '.join(listen)}")
-    worker = Worker(queues, connection=redis_conn)
+    logger.info("Starting worker, listening on queue: worker")
+    worker = Worker(["worker"], connection=redis_conn)
     worker.work(with_scheduler=True)
 
 

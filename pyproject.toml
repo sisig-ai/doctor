@@ -9,7 +9,7 @@ dependencies = [
     "uvicorn[standard]",
     "redis",
     "rq",
-    "crawl4ai",
+    "crawl4ai==0.6.0",
     "langchain-text-splitters",
     "litellm",
     "openai",
@@ -20,7 +20,8 @@ dependencies = [
     "python-multipart",
     "uuid",
     "fastapi-mcp>=0.3.3",
-    "mcp>=1.7.1"
+    "mcp>=1.7.1",
+    "nest-asyncio>=1.6.0",
 ]
 
 [build-system]
@@ -29,11 +30,11 @@ build-backend = "hatchling.build"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 
 [tool.black]
 line-length = 100
-target-version = ["py310"]
+target-version = ["py312"]
 
 [tool.hatch.build.targets.wheel]
 # Tell hatch where to find the packages for the 'doctor' project

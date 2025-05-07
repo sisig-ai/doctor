@@ -44,4 +44,3 @@ Doctor provides a complete stack for crawling, indexing, and searching web conte
   - QDRANT_HOST - Hostname for Qdrant vector database
   - QDRANT_PORT - Port for Qdrant vector database
   - REDIS_URI - URI for Redis connection
-  - DOCTOR_BASE_URL - Base URL for web service (used by MCP server)

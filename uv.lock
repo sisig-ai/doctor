@@ -337,7 +337,7 @@ wheels = [
 
 [[package]]
 name = "crawl4ai"
-version = "0.6.2"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -370,9 +370,9 @@ dependencies = [
     { name = "tf-playwright-stealth" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7e/9d/0f63b4f8ea487843b33a6da4b1ffff9e77dc4eee32cd25fb8bb52f3e6e04/crawl4ai-0.6.2.tar.gz", hash = "sha256:f52acee539500ec5fc8edbb7d3a3378a1b26f79017a52117bd10673a90a0f562", size = 291051 }
+sdist = { url = "https://files.pythonhosted.org/packages/15/84/245d259cc64d02927fab7ece13f01d7aa18b1db3c979a90977d2ab873bb1/crawl4ai-0.6.0.tar.gz", hash = "sha256:237bb37babf829e1bbd6d35db46827e16521ff66931a20bfbc2540f71d2c67b1", size = 289938 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/35/a604b5bc889c23f0960823092a75241fe81d1c7ae0762c5277583da08c5b/crawl4ai-0.6.2-py3-none-any.whl", hash = "sha256:f52ae16081afcd4b398c023fb9c9c8d31c592047bade4a97054a82c2271c54e6", size = 287248 },
+    { url = "https://files.pythonhosted.org/packages/94/34/d77b3bcb64bbf032546b9d7cf37ace51210e504e66a62aadef4047147c6d/crawl4ai-0.6.0-py3-none-any.whl", hash = "sha256:bb4ce475b10f6bbd828a7b43c942d34b84428a0223b00bcfb6688409202100f6", size = 286785 },
 ]
 
 [[package]]
@@ -450,6 +450,7 @@ dependencies = [
     { name = "langchain-text-splitters" },
     { name = "litellm" },
     { name = "mcp" },
+    { name = "nest-asyncio" },
     { name = "openai" },
     { name = "pydantic" },
     { name = "python-multipart" },
@@ -472,7 +473,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "crawl4ai" },
+    { name = "crawl4ai", specifier = "==0.6.0" },
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "fastapi-mcp", specifier = ">=0.3.3" },
@@ -480,6 +481,7 @@ requires-dist = [
     { name = "langchain-text-splitters" },
     { name = "litellm" },
     { name = "mcp", specifier = ">=1.7.1" },
+    { name = "nest-asyncio", specifier = ">=1.6.0" },
     { name = "openai" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "python-multipart" },
@@ -1239,6 +1241,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b9/3b/1599631f59024b75c4d6e3069f4502409970a336647502aaf6b62fb7ac98/multidict-6.4.3-cp313-cp313t-win32.whl", hash = "sha256:0ecdc12ea44bab2807d6b4a7e5eef25109ab1c82a8240d86d3c1fc9f3b72efd5", size = 41775 },
     { url = "https://files.pythonhosted.org/packages/e8/4e/09301668d675d02ca8e8e1a3e6be046619e30403f5ada2ed5b080ae28d02/multidict-6.4.3-cp313-cp313t-win_amd64.whl", hash = "sha256:7146a8742ea71b5d7d955bffcef58a9e6e04efba704b52a460134fefd10a8208", size = 45946 },
     { url = "https://files.pythonhosted.org/packages/96/10/7d526c8974f017f1e7ca584c71ee62a638e9334d8d33f27d7cdfc9ae79e4/multidict-6.4.3-py3-none-any.whl", hash = "sha256:59fe01ee8e2a1e8ceb3f6dbb216b09c8d9f4ef1c22c4fc825d045a147fa2ebc9", size = 10400 },
+]
+
+[[package]]
+name = "nest-asyncio"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/f8/51569ac65d696c8ecbee95938f89d4abf00f47d58d48f6fbabfe8f0baefe/nest_asyncio-1.6.0.tar.gz", hash = "sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe", size = 7418 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/c4/c2971a3ba4c6103a3d10c4b0f24f461ddc027f0f09763220cf35ca1401b3/nest_asyncio-1.6.0-py3-none-any.whl", hash = "sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c", size = 5195 },
 ]
 
 [[package]]

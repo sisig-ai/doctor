@@ -1,11 +1,9 @@
 """Main module for the Doctor Web Service."""
 
 from contextlib import asynccontextmanager
-import datetime
-import json
-import logging
 import uuid
 from typing import List, Optional
+import asyncio
 
 from mcp.server.session import ServerSession
 import redis
@@ -36,12 +34,11 @@ from src.common.models import (
     SearchDocsResponse,
     SearchResult,
 )
+from src.lib.logger import get_logger
 from qdrant_client.http import models as qdrant_models
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Get logger for this module
+logger = get_logger(__name__)
 
 # Temporary monkeypatch which avoids crashing when a POST message is received
 # before a connection has been initialized, e.g: after a deployment.
@@ -75,9 +72,7 @@ app = FastAPI(
 
 redis_conn = redis.from_url(REDIS_URI)
 
-default_queue = Queue("default", connection=redis_conn)
-high_queue = Queue("high", connection=redis_conn)
-low_queue = Queue("low", connection=redis_conn)
+queue = Queue("worker", connection=redis_conn)
 
 
 @app.post("/fetch_url", response_model=FetchUrlResponse, operation_id="fetch_url")
@@ -94,33 +89,14 @@ async def fetch_url(request: FetchUrlRequest):
     # Generate a temporary job ID
     job_id = str(uuid.uuid4())
 
-    # Store the request details in Redis for the worker to pick up
-    redis_conn = redis.from_url(REDIS_URI)
-    job_request_key = f"job_request:{job_id}"
-
-    # Store job request details
-    job_request_data = {
-        "url": str(request.url),
-        "max_pages": str(request.max_pages),
-        "tags": json.dumps(request.tags if request.tags else []),
-        "status": "requested",
-        "created_at": datetime.datetime.now().isoformat(),
-    }
-
-    # Store in Redis
-    redis_conn.hset(job_request_key, mapping=job_request_data)
-    # Set expiration to 24 hours
-    redis_conn.expire(job_request_key, 86400)
-
     # Enqueue the job creation task
     # The crawl worker will handle both creating the job record and enqueueing the crawl task
-    high_queue.enqueue(
+    queue.enqueue(
         "src.crawl_worker.tasks.create_job",
-        url=str(request.url),
+        request.url,
+        job_id,
         tags=request.tags,
         max_pages=request.max_pages,
-        job_id=job_id,  # Pass the pre-generated job_id
-        job_timeout="5m",  # Set a reasonable timeout for job creation
     )
 
     logger.info(f"Enqueued job creation for URL: {request.url}, job_id: {job_id}")
@@ -172,13 +148,13 @@ async def search_docs(
             ensure_qdrant_collection(qdrant_client)
 
             # Get embeddings for the query
-            from src.common.embeddings import get_embedding
+            from src.lib.embedder import generate_embedding
 
             results = []
 
             try:
                 # Try semantic search first
-                query_embedding = get_embedding(query)
+                query_embedding = await generate_embedding(query)
                 logger.debug("Generated embedding for search query")
 
                 # Search Qdrant
@@ -342,106 +318,178 @@ async def search_docs(
 
 @app.get("/job_progress", response_model=JobProgressResponse, operation_id="job_progress")
 async def job_progress(job_id: str = Query(..., description="The job ID to check progress for")):
-    """
-    Get the progress of a crawl job.
-
-    Args:
-        job_id: The job ID
-
-    Returns:
-        Job progress information
-    """
-    logger.info(f"Checking progress for job {job_id}")
+    logger.info(f"BEGIN job_progress for job {job_id}")
 
     # Create a fresh connection to get the latest data
     # This ensures we always get the most recent job state
-    conn = get_read_only_connection()
+    attempts = 0
+    max_attempts = 3
+    retry_delay = 0.1  # seconds
+    result = None  # Initialize result to None outside the loop
 
-    try:
-        # First try exact job_id match
-        logger.info(f"Looking for exact match for job ID: {job_id}")
-        result = conn.execute(
-            """
-            SELECT job_id, start_url, status, pages_discovered, pages_crawled,
-                   max_pages, tags, created_at, updated_at, error_message
-            FROM jobs
-            WHERE job_id = ?
-            """,
-            (job_id,),
-        ).fetchone()
+    logger.info(f"Starting check loop for job {job_id} (max_attempts={max_attempts})")
+    while attempts < max_attempts:
+        attempts += 1
+        conn = None
 
-        # If not found, try partial match (useful if client received truncated UUID)
-        if not result and len(job_id) >= 8:
-            logger.info(f"Exact match not found, trying partial match for job ID: {job_id}")
+        try:
+            # Get a fresh read-only connection each time
+            conn = get_read_only_connection()
+            logger.info(f"Established fresh read-only connection to database (attempt {attempts})")
+
+            # First try exact job_id match
+            logger.info(f"Looking for exact match for job ID: {job_id}")
             result = conn.execute(
                 """
                 SELECT job_id, start_url, status, pages_discovered, pages_crawled,
                        max_pages, tags, created_at, updated_at, error_message
                 FROM jobs
-                WHERE job_id LIKE ?
-                ORDER BY created_at DESC
-                LIMIT 1
+                WHERE job_id = ?
                 """,
-                (f"{job_id}%",),
+                (job_id,),
             ).fetchone()
 
-        if not result:
-            # Log the failure to find the job
-            logger.warning(f"Job {job_id} not found in database (tried exact and partial match)")
-            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+            # If not found, try partial match (useful if client received truncated UUID)
+            if not result and len(job_id) >= 8:
+                logger.info(f"Exact match not found, trying partial match for job ID: {job_id}")
+                result = conn.execute(
+                    """
+                    SELECT job_id, start_url, status, pages_discovered, pages_crawled,
+                           max_pages, tags, created_at, updated_at, error_message
+                    FROM jobs
+                    WHERE job_id LIKE ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (f"{job_id}%",),
+                ).fetchone()
 
-        (
-            job_id,
-            url,
-            status,
-            pages_discovered,
-            pages_crawled,
-            max_pages,
-            tags_json,
-            created_at,
-            updated_at,
-            error_message,
-        ) = result
+            if not result:
+                # Job not found on this attempt
+                logger.warning(
+                    f"Job {job_id} not found (attempt {attempts}/{max_attempts}). Retrying in {retry_delay}s..."
+                )
+                # Close connection before sleeping
+                if conn:
+                    conn.close()
+                    conn = None  # Ensure we get a fresh one next iteration
 
-        logger.info(
-            f"Found job with ID: {job_id}, status: {status}, discovered: {pages_discovered}, crawled: {pages_crawled}"
-        )
+                # If this was the last attempt, break the loop to raise 404 outside
+                if attempts >= max_attempts:
+                    logger.warning(f"Job {job_id} not found after {max_attempts} attempts.")
+                    break  # Exit the while loop
 
-        # Determine if job is completed
-        completed = status in ["completed", "failed"]
+                # Wait before the next attempt
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+                continue  # Go to next iteration of the while loop
 
-        # Calculate progress percentage
-        progress_percent = 0
-        if max_pages > 0 and pages_discovered > 0:
-            progress_percent = min(
-                100, int((pages_crawled / min(pages_discovered, max_pages)) * 100)
+            # --- Job found in database ---
+            (
+                job_id,
+                url,
+                status,
+                pages_discovered,
+                pages_crawled,
+                max_pages,
+                tags_json,
+                created_at,
+                updated_at,
+                error_message,
+            ) = result
+
+            logger.info(
+                f"Found job with ID: {job_id}, status: {status}, discovered: {pages_discovered}, crawled: {pages_crawled}, updated: {updated_at}"
             )
 
-        logger.info(
-            f"Job {job_id} progress: {pages_crawled}/{pages_discovered} pages, {progress_percent}% complete, status: {status}"
-        )
+            # Determine if job is completed
+            completed = status in ["completed", "failed"]
 
-        return JobProgressResponse(
-            pages_crawled=pages_crawled,
-            pages_total=pages_discovered,
-            completed=completed,
-            status=status,
-            error_message=error_message,
-            progress_percent=progress_percent,
-            url=url,
-            max_pages=max_pages,
-            created_at=created_at,
-            updated_at=updated_at,
-        )
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        logger.error(f"Error checking job progress for {job_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        # Make sure to close the connection to free memory
-        conn.close()
+            # Calculate progress percentage
+            progress_percent = 0
+            if max_pages > 0 and pages_discovered > 0:
+                progress_percent = min(
+                    100, int((pages_crawled / min(pages_discovered, max_pages)) * 100)
+                )
+
+            logger.info(
+                f"Job {job_id} progress: {pages_crawled}/{pages_discovered} pages, {progress_percent}% complete, status: {status}"
+            )
+
+            return JobProgressResponse(
+                pages_crawled=pages_crawled,
+                pages_total=pages_discovered,
+                completed=completed,
+                status=status,
+                error_message=error_message,
+                progress_percent=progress_percent,
+                url=url,
+                max_pages=max_pages,
+                created_at=created_at,
+                updated_at=updated_at,
+            )
+
+        except HTTPException:
+            # Re-raise HTTP exceptions as-is
+            logger.warning(
+                f"HTTPException occurred during attempt {attempts} for job {job_id}, re-raising."
+            )
+            raise
+        except Exception as e:
+            # Log errors during attempts but don't necessarily stop retrying unless it's the last attempt
+            logger.error(
+                f"Error checking job progress (attempt {attempts}) for job {job_id}: {str(e)}"
+            )
+            if attempts < max_attempts:
+                logger.info(f"Non-fatal error on attempt {attempts}, will retry after delay.")
+                # Clean up potentially broken connection before retrying
+                if conn:
+                    try:
+                        conn.close()
+                        conn = None
+                    except Exception as close_err:
+                        logger.warning(
+                            f"Error closing connection during error handling: {close_err}"
+                        )
+                await asyncio.sleep(retry_delay)  # Wait before retry on error too
+                retry_delay *= 2
+                continue  # Continue to next attempt
+            else:
+                logger.error(f"Error on final attempt ({attempts}) for job {job_id}. Raising 500.")
+                # Clean up connection if open
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception as close_err:
+                        logger.warning(
+                            f"Error closing connection during final error handling: {close_err}"
+                        )
+                raise HTTPException(
+                    status_code=500, detail=f"Database error after retries: {str(e)}"
+                )
+
+        finally:
+            # Make sure to close the connection if it's still open *at the end of this attempt*
+            if conn:
+                conn.close()
+
+    # If the loop finished without finding the job (i.e., break was hit after max attempts)
+    # raise the 404 error.
+    # We check 'result' one last time for clarity, though the loop logic ensures it's None here.
+    if not result:
+        # Check job count for debugging before raising 404
+        conn_check = None
+        try:
+            conn_check = get_read_only_connection()
+            job_count = conn_check.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+            logger.info(f"Database contains {job_count} total jobs during final 404 check.")
+        except Exception as count_error:
+            logger.warning(f"Failed to count jobs in database during 404 check: {str(count_error)}")
+        finally:
+            if conn_check:
+                conn_check.close()
+        logger.warning(f"Raising 404 for job {job_id} after all retries.")  # Add log before raising
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found after retries")
 
 
 @app.get("/list_doc_pages", response_model=ListDocPagesResponse, operation_id="list_doc_pages")

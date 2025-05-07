@@ -1,6 +1,12 @@
 version: '3.8'
 
 services:
+  base:
+    build:
+      context: .
+      dockerfile: Dockerfile.base
+    image: doctor-base:latest
+
   qdrant:
     image: qdrant/qdrant:latest
     ports:
@@ -39,6 +45,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      base:
+        condition: service_completed_successfully
 
     networks:
       - doctor-net
@@ -62,6 +70,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      base:
+        condition: service_completed_successfully
 
     networks:
       - doctor-net

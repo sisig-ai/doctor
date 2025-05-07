@@ -2,13 +2,11 @@
 
 import os
 from typing import List
-import logging
 
-# Configure logging
-logging.basicConfig(
-    level=logging.ERROR, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+from src.lib.logger import get_logger
+
+# Get logger for this module
+logger = get_logger(__name__)
 
 # Database settings
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")

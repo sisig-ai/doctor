@@ -1,26 +1,7 @@
-FROM python:3.10-slim
+FROM doctor-base:latest AS web_service
 
-WORKDIR /app
-
-# Install uv
-RUN pip install --no-cache-dir uv
-
-# Copy project configuration and readme
-COPY pyproject.toml /app/
-COPY README.md /app/
-
-# Install dependencies
-RUN uv pip install --system -e .
-
-# Copy source code
-COPY src /app/src
-
-# Create data directory
-RUN mkdir -p /app/data
-
-# Set environment variables
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
+# The WORKDIR, ENV, and code are inherited from the base image.
+# If specific overrides or additional ENV vars are needed for web_service, set them here.
 
 # Expose the port
 EXPOSE 9111

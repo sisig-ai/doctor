@@ -1,7 +1,6 @@
 """Database setup and connection utilities for the Doctor project."""
 
 import os
-import logging
 from typing import Optional, List
 import json
 
@@ -17,12 +16,38 @@ from .config import (
     DUCKDB_PATH,
     DATA_DIR,
 )
+from src.lib.logger import get_logger
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+# Get logger for this module
+logger = get_logger(__name__)
+
+# Define table creation schemas
+CREATE_JOBS_TABLE_SQL = """
+CREATE OR REPLACE TABLE jobs (
+    job_id VARCHAR PRIMARY KEY,
+    start_url VARCHAR,
+    status VARCHAR,
+    pages_discovered INTEGER DEFAULT 0,
+    pages_crawled INTEGER DEFAULT 0,
+    max_pages INTEGER,
+    tags VARCHAR, -- JSON string array
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    error_message VARCHAR
 )
-logger = logging.getLogger(__name__)
+"""
+
+CREATE_PAGES_TABLE_SQL = """
+CREATE OR REPLACE TABLE pages (
+    id VARCHAR PRIMARY KEY,
+    url VARCHAR,
+    domain VARCHAR,
+    raw_text TEXT,
+    crawl_date TIMESTAMP,
+    tags VARCHAR,  -- JSON string array
+    job_id VARCHAR  -- Reference to the job that crawled this page
+)
+"""
 
 
 def get_qdrant_client() -> QdrantClient:
@@ -87,107 +112,55 @@ def get_read_only_connection() -> duckdb.DuckDBPyConnection:
     """
     Get a read-only DuckDB connection that directly accesses the database file.
 
-    This approach ensures we always get the most up-to-date data by directly
-    connecting to the database file with read_only=True, which allows concurrent
-    access even while the file is being written to by other processes.
+    This function requires the database file to exist and will raise an error
+    if it cannot be found or opened in read-only mode.
 
     Returns:
         Read-only DuckDB connection to the database
+
+    Raises:
+        FileNotFoundError: If the database file does not exist.
+        duckdb.IOException: If there's an issue opening the file (permissions, etc.).
+        Exception: For other potential connection errors.
     """
+    # Check if the database file exists first
+    if not os.path.exists(DUCKDB_PATH):
+        logger.error(
+            f"Database file {DUCKDB_PATH} does not exist. Cannot create read-only connection."
+        )
+        raise FileNotFoundError(f"Required database file not found: {DUCKDB_PATH}")
+
+    # Log file stats to help debug
+    file_size = os.path.getsize(DUCKDB_PATH)
+    file_mtime = os.path.getmtime(DUCKDB_PATH)
+    logger.info(
+        f"Attempting to open read-only database file: path={DUCKDB_PATH}, size={file_size} bytes, last_modified={file_mtime}"
+    )
+
     try:
-        # Check if the database file exists first
-        if not os.path.exists(DUCKDB_PATH):
-            logger.warning(
-                f"Database file {DUCKDB_PATH} does not exist yet, returning empty in-memory database"
-            )
-            conn = duckdb.connect(":memory:")
-            # Create empty tables with the right schema
-            conn.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                job_id VARCHAR PRIMARY KEY,
-                start_url VARCHAR,
-                status VARCHAR,
-                pages_discovered INTEGER DEFAULT 0,
-                pages_crawled INTEGER DEFAULT 0,
-                max_pages INTEGER,
-                tags VARCHAR,
-                created_at TIMESTAMP,
-                updated_at TIMESTAMP,
-                error_message VARCHAR
-            )
-            """)
-            conn.execute("""
-            CREATE TABLE IF NOT EXISTS pages (
-                id VARCHAR PRIMARY KEY,
-                url VARCHAR,
-                domain VARCHAR,
-                raw_text TEXT,
-                crawl_date TIMESTAMP,
-                tags VARCHAR
-            )
-            """)
-            return conn
-
-        # Log file stats to help debug
-        file_size = os.path.getsize(DUCKDB_PATH)
-        file_mtime = os.path.getmtime(DUCKDB_PATH)
-        logger.info(f"Opening database file: size={file_size} bytes, last_modified={file_mtime}")
-
         # Open a direct connection with read_only=True
-        logger.info(f"Connecting to DuckDB file {DUCKDB_PATH} in read-only mode")
-
-        # Use access_mode='READ_ONLY' to ensure filesystem-level read-only access
-        # This is safer than the Python API read_only parameter which just sets a flag
+        # Use access_mode='READ_ONLY' for stricter filesystem-level read-only access
         conn = duckdb.connect(DUCKDB_PATH, read_only=True)
+        logger.info(f"Successfully opened DuckDB database {DUCKDB_PATH} in read-only mode")
 
-        # Test the connection to verify it's usable
+        # Optional: Test the connection
         try:
             test_query = conn.execute("SELECT 1").fetchone()
-            if test_query and test_query[0] == 1:
-                logger.info("Successfully opened DuckDB database in read-only mode")
-            else:
-                logger.warning("Connection test returned unexpected result")
+            if not (test_query and test_query[0] == 1):
+                logger.warning("Read-only connection test returned unexpected result.")
         except Exception as e:
-            logger.warning(f"Connection test failed: {e}")
-            # Connection exists but query failed - we'll keep the connection anyway
-            # as future queries might succeed if the DB becomes available
+            logger.warning(f"Read-only connection test failed: {e}. Proceeding anyway.")
 
         return conn
 
+    except duckdb.IOException as e:
+        logger.error(f"Failed to open DuckDB file {DUCKDB_PATH} in read-only mode: {e}")
+        raise  # Re-raise the specific IO error
     except Exception as e:
-        logger.error(f"Failed to create read-only connection: {str(e)}")
-        # Fallback to memory-only database with correct schema but no data
-        try:
-            conn = duckdb.connect(":memory:")
-            conn.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                job_id VARCHAR PRIMARY KEY,
-                start_url VARCHAR,
-                status VARCHAR,
-                pages_discovered INTEGER DEFAULT 0,
-                pages_crawled INTEGER DEFAULT 0,
-                max_pages INTEGER,
-                tags VARCHAR,
-                created_at TIMESTAMP,
-                updated_at TIMESTAMP,
-                error_message VARCHAR
-            )
-            """)
-
-            conn.execute("""
-            CREATE TABLE IF NOT EXISTS pages (
-                id VARCHAR PRIMARY KEY,
-                url VARCHAR,
-                domain VARCHAR,
-                raw_text TEXT,
-                crawl_date TIMESTAMP,
-                tags VARCHAR
-            )
-            """)
-            return conn
-        except Exception as fallback_e:
-            logger.error(f"Failed to create fallback in-memory database: {str(fallback_e)}")
-            raise
+        logger.error(
+            f"An unexpected error occurred while creating read-only connection to {DUCKDB_PATH}: {e}"
+        )
+        raise  # Re-raise any other connection errors
 
 
 def ensure_duckdb_tables(conn: Optional[duckdb.DuckDBPyConnection] = None) -> None:
@@ -203,32 +176,10 @@ def ensure_duckdb_tables(conn: Optional[duckdb.DuckDBPyConnection] = None) -> No
 
     try:
         # Create pages table
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS pages (
-            id VARCHAR PRIMARY KEY,
-            url VARCHAR,
-            domain VARCHAR,
-            raw_text TEXT,
-            crawl_date TIMESTAMP,
-            tags VARCHAR  -- JSON string array
-        )
-        """)
+        conn.execute(CREATE_PAGES_TABLE_SQL)
 
         # Create jobs table
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS jobs (
-            job_id VARCHAR PRIMARY KEY,
-            start_url VARCHAR,
-            status VARCHAR,
-            pages_discovered INTEGER DEFAULT 0,
-            pages_crawled INTEGER DEFAULT 0,
-            max_pages INTEGER,
-            tags VARCHAR,  -- JSON string array
-            created_at TIMESTAMP,
-            updated_at TIMESTAMP,
-            error_message VARCHAR
-        )
-        """)
+        conn.execute(CREATE_JOBS_TABLE_SQL)
 
         logger.info("DuckDB tables created/verified")
     except Exception as e:
@@ -257,33 +208,27 @@ def deserialize_tags(tags_json: str) -> List[str]:
 
 
 def init_databases(read_only: bool = False) -> None:
-    """
-    Initialize all databases.
+    """Initialize all databases, creating them if they don't exist."""
+    logger.info("Initializing databases")
 
-    Args:
-        read_only: Whether to initialize databases in read-only mode.
-                  Web service should use read_only=True.
-                  Crawl worker should use read_only=False (default).
-    """
-    # Initialize Qdrant
     try:
-        qdrant_client = get_qdrant_client()
-        ensure_qdrant_collection(qdrant_client)
-    except Exception as e:
-        logger.error(f"Failed to initialize Qdrant: {e}")
+        # Ensure database directory exists
+        os.makedirs(os.path.dirname(DUCKDB_PATH), exist_ok=True)
 
-    # Initialize DuckDB
-    try:
+        # Only set up database tables if not in read-only mode
         if not read_only:
-            # For crawl worker, ensure tables exist
-            ensure_duckdb_tables()
-        else:
-            # For web service, just log that we're using read-only mode
-            logger.info("Initializing databases in read-only mode")
-    except Exception as e:
-        logger.error(f"Failed to initialize DuckDB: {e}")
+            # Ensure the DuckDB tables exist with the correct schema
+            conn = get_duckdb_connection()
+            ensure_duckdb_tables(conn)
+            conn.close()
 
-    logger.info(f"Database initialization process completed (read_only={read_only}).")
+        # Ensure the Qdrant collection exists
+        ensure_qdrant_collection()
+
+        logger.info("Database initialization complete")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+        raise
 
 
 if __name__ == "__main__":
