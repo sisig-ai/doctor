@@ -8,10 +8,7 @@ from src.common.logger import get_logger
 # Get logger for this module
 logger = get_logger(__name__)
 
-# Database settings
-QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
-QDRANT_COLLECTION_NAME = "doctor_chunks"
+# Vector settings
 VECTOR_SIZE = 1536  # OpenAI ada-002 embedding size
 
 # Redis settings
@@ -20,6 +17,7 @@ REDIS_URI = os.getenv("REDIS_URI", "redis://localhost:6379")
 # DuckDB settings
 DATA_DIR = os.getenv("DATA_DIR", "data")
 DUCKDB_PATH = os.path.join(DATA_DIR, "doctor.duckdb")
+DUCKDB_EMBEDDINGS_TABLE = "document_embeddings"
 DB_RETRY_ATTEMPTS = int(os.getenv("DB_RETRY_ATTEMPTS", "5"))
 DB_RETRY_DELAY_SEC = float(os.getenv("DB_RETRY_DELAY_SEC", "0.5"))
 

@@ -7,15 +7,6 @@ services:
       dockerfile: Dockerfile.base
     image: doctor-base:latest
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    networks:
-      - doctor-net
 
   redis:
     image: redis:alpine
@@ -37,8 +28,6 @@ services:
       - ./src:/app/src
       - ./data:/app/data
     environment:
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
       - REDIS_URI=redis://redis:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - PYTHONPATH=/app
@@ -61,8 +50,6 @@ services:
       - ./src:/app/src
       - ./data:/app/data
     environment:
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
       - REDIS_URI=redis://redis:6379
       - PYTHONPATH=/app
       - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -79,7 +66,3 @@ services:
 networks:
   doctor-net:
     driver: bridge
-
-volumes:
-  qdrant_data:
-    driver: local

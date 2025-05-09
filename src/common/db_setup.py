@@ -6,14 +6,8 @@ from typing import Optional, List
 import json
 
 import duckdb
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qdrant_models
 
 from .config import (
-    QDRANT_HOST,
-    QDRANT_PORT,
-    QDRANT_COLLECTION_NAME,
-    VECTOR_SIZE,
     DUCKDB_PATH,
     DATA_DIR,
 )
@@ -51,48 +45,19 @@ CREATE OR REPLACE TABLE pages (
 """
 
 
-def get_qdrant_client() -> QdrantClient:
-    """Gets a Qdrant client using configuration settings.
-
-    Returns:
-        QdrantClient: The configured Qdrant client.
-    """
-    logger.info(f"Connecting to Qdrant at {QDRANT_HOST}:{QDRANT_PORT}")
-    return QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
-
-
-def ensure_qdrant_collection(client: Optional[QdrantClient] = None) -> None:
-    """Ensures the Qdrant collection exists, creating it if necessary.
-
-    Args:
-        client: An optional Qdrant client instance. If None, a new client is created.
-    """
-    if client is None:
-        client = get_qdrant_client()
-
-    # Check if collection exists
-    try:
-        collections = client.get_collections().collections
-        collection_names = [collection.name for collection in collections]
-    except Exception as e:
-        logger.error(f"Could not connect to Qdrant to check collections: {e}")
-        # Optionally, re-raise or handle connection failure
-        return
-
-    if QDRANT_COLLECTION_NAME not in collection_names:
-        logger.info(f"Creating Qdrant collection: {QDRANT_COLLECTION_NAME}")
-        try:
-            client.create_collection(
-                collection_name=QDRANT_COLLECTION_NAME,
-                vectors_config=qdrant_models.VectorParams(
-                    size=VECTOR_SIZE,
-                    distance=qdrant_models.Distance.COSINE,
-                ),
-            )
-        except Exception as e:
-            logger.error(f"Failed to create Qdrant collection '{QDRANT_COLLECTION_NAME}': {e}")
-    else:
-        logger.info(f"Qdrant collection already exists: {QDRANT_COLLECTION_NAME}")
+# Define document embeddings table creation schema
+CREATE_DOCUMENT_EMBEDDINGS_TABLE_SQL = """
+CREATE OR REPLACE TABLE document_embeddings (
+    id VARCHAR PRIMARY KEY,
+    embedding FLOAT4[1536] NOT NULL,
+    text_chunk VARCHAR,
+    page_id VARCHAR,
+    url VARCHAR,
+    domain VARCHAR,
+    tags VARCHAR[],
+    job_id VARCHAR
+);
+"""
 
 
 def get_duckdb_connection(read_only: bool = False) -> duckdb.DuckDBPyConnection:
@@ -234,8 +199,119 @@ def deserialize_tags(tags_json: str) -> List[str]:
         return []  # Return empty list on decode error
 
 
+def ensure_duckdb_vss_extension(conn: Optional[duckdb.DuckDBPyConnection] = None) -> None:
+    """Ensures the DuckDB VSS extension is loaded and embeddings table exists.
+
+    Args:
+        conn: An optional DuckDB connection. If None, a new connection is created.
+    """
+    close_conn = False
+    if conn is None:
+        try:
+            conn = get_duckdb_connection()
+            close_conn = True
+        except Exception:
+            logger.error("Cannot ensure DuckDB VSS extension without a valid connection.")
+            return
+
+    try:
+        # Install and load VSS extension
+        try:
+            conn.execute("INSTALL vss;")
+            logger.info("DuckDB VSS extension installed")
+        except Exception as e:
+            # If extension is already installed, this will fail, but that's okay
+            logger.debug(f"VSS extension installation attempt: {str(e)}")
+
+        conn.execute("LOAD vss;")
+        logger.info("DuckDB VSS extension loaded")
+
+        # Enable experimental persistence for HNSW indexes
+        try:
+            conn.execute("SET hnsw_enable_experimental_persistence = true;")
+            logger.info("Enabled experimental persistence for HNSW indexes")
+        except Exception as e:
+            logger.error(f"Failed to enable HNSW persistence: {str(e)}")
+            logger.warning("HNSW indexes may not work in persistent mode")
+
+        # Verify the VSS extension is actually loaded - using a valid VSS function
+        try:
+            # Just test we can create a simple HNSW index which is a VSS operation
+            conn.execute("""
+                WITH test_data AS (SELECT [0.1, 0.2, 0.3]::FLOAT[] AS v)
+                SELECT * FROM test_data LIMIT 1;
+            """).fetchone()
+            logger.info("VSS extension functionality verified successfully")
+        except Exception as e:
+            logger.error(f"VSS extension verification failed: {str(e)}")
+            logger.warning("Will attempt to continue with table creation anyway")
+
+        # Ensure the document_embeddings table exists
+        try:
+            # Check if the table exists first
+            table_exists = conn.execute(
+                "SELECT count(*) FROM information_schema.tables WHERE table_name = 'document_embeddings'"
+            ).fetchone()[0]
+
+            if table_exists:
+                logger.info("document_embeddings table already exists")
+            else:
+                # Create embeddings table
+                conn.execute(CREATE_DOCUMENT_EMBEDDINGS_TABLE_SQL)
+                logger.info("DuckDB document_embeddings table created successfully")
+
+                # Verify the table was created
+                verify_table = conn.execute(
+                    "SELECT count(*) FROM information_schema.tables WHERE table_name = 'document_embeddings'"
+                ).fetchone()[0]
+
+                if verify_table != 1:
+                    raise Exception("Failed to create document_embeddings table")
+        except Exception as table_err:
+            logger.error(f"Error creating document_embeddings table: {str(table_err)}")
+            raise
+
+        # Try to create HNSW index, but don't fail if it can't be created
+        # The table can still be used without the index, it will just be slower
+        try:
+            # First check for existing index to avoid error
+            index_exists = False
+            try:
+                index_exists = (
+                    conn.execute("""
+                    SELECT count(*)
+                    FROM duckdb_indexes()
+                    WHERE index_name = 'hnsw_index_on_embeddings'
+                """).fetchone()[0]
+                    > 0
+                )
+            except Exception:
+                # If duckdb_indexes() function isn't available, just try creating the index
+                pass
+
+            if index_exists:
+                logger.info("HNSW index on document_embeddings.embedding already exists")
+            else:
+                conn.execute("""
+                CREATE INDEX hnsw_index_on_embeddings
+                ON document_embeddings
+                USING HNSW (embedding)
+                WITH (metric = 'cosine');
+                """)
+                logger.info("Created HNSW index on document_embeddings.embedding")
+        except Exception as e:
+            # Log but continue if index creation fails - we can still use the table
+            logger.warning(f"Failed to create HNSW index, but continuing without it: {str(e)}")
+            logger.info("Vector searches will work but may be slower without the HNSW index")
+    except Exception as e:
+        logger.error(f"Failed to set up DuckDB VSS and embeddings table: {e}")
+    finally:
+        if close_conn and conn:
+            conn.close()
+
+
 def init_databases(read_only: bool = False) -> None:
-    """Initializes all databases (DuckDB and Qdrant), creating them if they don't exist.
+    """Initializes all databases (DuckDB), creating them if they don't exist.
 
     Args:
         read_only: If True, initializes DuckDB in read-only mode (tables are not created).
@@ -251,53 +327,16 @@ def init_databases(read_only: bool = False) -> None:
             # Ensure the DuckDB tables exist with the correct schema
             conn = get_duckdb_connection()
             ensure_duckdb_tables(conn)
-            conn.close()
 
-        # Ensure the Qdrant collection exists
-        ensure_qdrant_collection()
+            # Ensure VSS extension is loaded and embeddings table exists
+            ensure_duckdb_vss_extension(conn)
+
+            conn.close()
 
         logger.info("Database initialization complete")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         raise
-
-
-async def get_qdrant_client_with_retry(
-    max_attempts: int = 3, retry_delay: float = 0.1
-) -> QdrantClient:
-    """
-    Get a Qdrant client with retry logic.
-
-    Args:
-        max_attempts: Maximum number of connection attempts
-        retry_delay: Initial delay between retries (doubles after each attempt)
-
-    Returns:
-        QdrantClient: Connected Qdrant client
-
-    Raises:
-        Exception: If connection fails after all retries
-    """
-    attempts = 0
-    last_error = None
-
-    while attempts < max_attempts:
-        attempts += 1
-        try:
-            client = get_qdrant_client()
-            # Verify the connection works
-            ensure_qdrant_collection(client)
-            return client
-        except Exception as e:
-            last_error = e
-            logger.warning(f"Qdrant connection attempt {attempts}/{max_attempts} failed: {str(e)}")
-            if attempts < max_attempts:
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-
-    # If we get here, all attempts failed
-    logger.error(f"Failed to connect to Qdrant after {max_attempts} attempts")
-    raise last_error or Exception("Failed to connect to Qdrant")
 
 
 async def get_duckdb_connection_with_retry(

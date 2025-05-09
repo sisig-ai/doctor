@@ -12,7 +12,6 @@ from src.common.models import (
 from src.common.logger import get_logger
 from src.common.db_setup import (
     get_duckdb_connection_with_retry,
-    get_qdrant_client_with_retry,
 )
 from src.web_service.services.document_service import (
     search_docs,
@@ -54,17 +53,11 @@ async def search_docs_endpoint(
     )
 
     try:
-        # Get a fresh connection to Qdrant for this search
-        qdrant_client = await get_qdrant_client_with_retry()
-        logger.debug("Connected to Qdrant for search")
-
         # Get a fresh DuckDB connection
         conn = await get_duckdb_connection_with_retry()
         try:
             # Call the service function
-            response = await search_docs(
-                qdrant_client, conn, query, tags, max_results, return_full_document_text
-            )
+            response = await search_docs(conn, query, tags, max_results, return_full_document_text)
             return response
         except Exception as db_error:
             logger.error(f"Database error during search: {str(db_error)}")

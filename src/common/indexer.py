@@ -1,34 +1,59 @@
-"""Vector storage functionality using Qdrant."""
+"""Vector storage functionality using DuckDB."""
 
 import logging
 import uuid
 from typing import List, Dict, Any, Optional
 
-from src.common.db_setup import get_qdrant_client, QDRANT_COLLECTION_NAME
+import duckdb
+from src.common.db_setup import get_duckdb_connection
+from src.common.config import DUCKDB_EMBEDDINGS_TABLE, VECTOR_SIZE
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 
 class VectorIndexer:
-    """Class for indexing vectors and payloads in Qdrant."""
+    """Class for indexing vectors and payloads in DuckDB."""
 
-    def __init__(self, collection_name: str = None):
-        """
-        Initialize the vector indexer.
+    def __init__(
+        self, table_name: str = None, connection: Optional[duckdb.DuckDBPyConnection] = None
+    ):
+        """Initialize the vector indexer.
 
         Args:
-            collection_name: Name of the Qdrant collection to use (defaults to config value)
+            table_name: Name of the DuckDB table to use (defaults to config value)
+            connection: Optional DuckDB connection to use (creates a new one if not provided)
         """
-        self.client = get_qdrant_client()
-        self.collection_name = collection_name or QDRANT_COLLECTION_NAME
-        logger.debug(f"Initialized VectorIndexer with collection={self.collection_name}")
+        self._own_connection = connection is None
+        self.conn = connection if connection is not None else get_duckdb_connection()
+
+        # Ensure VSS extension is installed and loaded
+        try:
+            self.conn.execute("INSTALL vss;")
+            logger.debug("VSS extension installed")
+        except Exception as e:
+            # If extension is already installed, this will fail, but that's okay
+            logger.debug(f"VSS extension installation attempt: {str(e)}")
+
+        self.conn.execute("LOAD vss;")
+        logger.debug("VSS extension loaded")
+
+        self.table_name = table_name or DUCKDB_EMBEDDINGS_TABLE
+        logger.debug(f"Initialized VectorIndexer with table={self.table_name}")
+
+    def __del__(self):
+        """Clean up resources on destruction."""
+        if hasattr(self, "_own_connection") and self._own_connection and hasattr(self, "conn"):
+            try:
+                self.conn.close()
+                logger.debug("Closed DuckDB connection in VectorIndexer destructor")
+            except Exception:
+                pass
 
     async def index_vector(
         self, vector: List[float], payload: Dict[str, Any], point_id: Optional[str] = None
     ) -> str:
-        """
-        Index a single vector with its payload in Qdrant.
+        """Index a single vector with its payload in DuckDB.
 
         Args:
             vector: The embedding vector
@@ -42,6 +67,10 @@ class VectorIndexer:
             logger.error("Cannot index empty vector")
             raise ValueError("Vector cannot be empty")
 
+        if len(vector) != VECTOR_SIZE:
+            logger.error(f"Vector dimension mismatch: expected {VECTOR_SIZE}, got {len(vector)}")
+            raise ValueError(f"Vector dimension must be {VECTOR_SIZE}")
+
         # Generate a point ID if not provided
         if point_id is None:
             point_id = str(uuid.uuid4())
@@ -49,10 +78,41 @@ class VectorIndexer:
         logger.debug(f"Indexing vector of dimension {len(vector)} with point_id={point_id}")
 
         try:
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=[{"id": point_id, "vector": vector, "payload": payload}],
+            # First check if the table exists
+            try:
+                table_exists = self.conn.execute(
+                    f"SELECT count(*) FROM information_schema.tables WHERE table_name = '{self.table_name}'"
+                ).fetchone()[0]
+
+                if not table_exists:
+                    logger.error(
+                        f"Table '{self.table_name}' does not exist. Ensure database setup is complete."
+                    )
+                    raise Exception(
+                        f"Table '{self.table_name}' does not exist. Run database initialization first."
+                    )
+            except Exception as check_err:
+                logger.error(f"Error checking if table exists: {str(check_err)}")
+                raise
+
+            # Extract payload fields
+            text_chunk = payload.get("text", "")
+            page_id = payload.get("page_id", "")
+            url = payload.get("url", "")
+            domain = payload.get("domain", "")
+            tags = payload.get("tags", [])
+            job_id = payload.get("job_id", "")
+
+            # Insert the vector and payload into the table
+            self.conn.execute(
+                f"""
+                INSERT INTO {self.table_name}
+                (id, embedding, text_chunk, page_id, url, domain, tags, job_id)
+                VALUES (?::VARCHAR, ?::FLOAT4[{VECTOR_SIZE}], ?, ?, ?, ?, ?::VARCHAR[], ?)
+                """,
+                (point_id, vector, text_chunk, page_id, url, domain, tags, job_id),
             )
+
             logger.debug(f"Successfully indexed point {point_id}")
             return point_id
 
@@ -66,8 +126,7 @@ class VectorIndexer:
         payloads: List[Dict[str, Any]],
         point_ids: Optional[List[str]] = None,
     ) -> List[str]:
-        """
-        Index a batch of vectors with their payloads in Qdrant.
+        """Index a batch of vectors with their payloads in DuckDB.
 
         Args:
             vectors: List of embedding vectors
@@ -95,17 +154,37 @@ class VectorIndexer:
         logger.debug(f"Indexing batch of {len(vectors)} vectors")
 
         try:
-            points = [
-                {"id": point_id, "vector": vector, "payload": payload}
-                for point_id, vector, payload in zip(point_ids, vectors, payloads)
-            ]
+            # Prepare batch data for insertion
+            batch_data = []
+            for i, (point_id, vector, payload) in enumerate(zip(point_ids, vectors, payloads)):
+                if len(vector) != VECTOR_SIZE:
+                    logger.error(
+                        f"Vector {i} dimension mismatch: expected {VECTOR_SIZE}, got {len(vector)}"
+                    )
+                    raise ValueError(f"Vector dimension must be {VECTOR_SIZE}")
 
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=points,
+                text_chunk = payload.get("text", "")
+                page_id = payload.get("page_id", "")
+                url = payload.get("url", "")
+                domain = payload.get("domain", "")
+                tags = payload.get("tags", [])
+                job_id = payload.get("job_id", "")
+
+                batch_data.append(
+                    (point_id, vector, text_chunk, page_id, url, domain, tags, job_id)
+                )
+
+            # Use executemany for efficient batch insertion
+            self.conn.executemany(
+                f"""
+                INSERT INTO {self.table_name}
+                (id, embedding, text_chunk, page_id, url, domain, tags, job_id)
+                VALUES (?::VARCHAR, ?::FLOAT4[{VECTOR_SIZE}], ?, ?, ?, ?, ?::VARCHAR[], ?)
+                """,
+                batch_data,
             )
 
-            logger.debug(f"Successfully indexed batch of {len(points)} points")
+            logger.debug(f"Successfully indexed batch of {len(batch_data)} points")
             return point_ids
 
         except Exception as e:
@@ -118,13 +197,12 @@ class VectorIndexer:
         limit: int = 10,
         filter_payload: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        Search for similar vectors in Qdrant.
+        """Search for similar vectors in DuckDB.
 
         Args:
             query_vector: The query embedding vector
             limit: Maximum number of results to return
-            filter_payload: Optional filter to apply to the search
+            filter_payload: Optional filter to apply to the search (tags filter supported)
 
         Returns:
             List of search results, each containing the point ID, score, and payload
@@ -132,15 +210,66 @@ class VectorIndexer:
         logger.debug(f"Searching for similar vectors with limit={limit}")
 
         try:
-            search_result = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_vector,
-                limit=limit,
-                query_filter=filter_payload,
-            )
+            # Build the SQL query with optional tag filtering
+            query = f"""
+            SELECT
+                id,
+                text_chunk,
+                page_id,
+                url,
+                domain,
+                tags,
+                job_id,
+                array_cosine_distance(embedding, ?::FLOAT4[{VECTOR_SIZE}]) AS cosine_distance
+            FROM {self.table_name}
+            """
 
-            logger.debug(f"Search returned {len(search_result)} results")
-            return search_result
+            params = [query_vector]
+
+            # Add tag filtering if present in filter_payload
+            if filter_payload and "must" in filter_payload:
+                for condition in filter_payload["must"]:
+                    if condition.get("key") == "tags" and condition.get("match", {}).get("any"):
+                        tag_list = condition["match"]["any"]
+                        if tag_list:
+                            query += " WHERE array_has_any(tags, ?::VARCHAR[])"
+                            params.append(tag_list)
+                            logger.debug(f"Added tag filter: {tag_list}")
+                            break
+
+            # Add ordering and limit
+            query += " ORDER BY cosine_distance ASC LIMIT ?"
+            params.append(limit)
+
+            # Execute the query
+            result = self.conn.execute(query, params).fetchall()
+            logger.debug(f"Search returned {len(result)} results")
+
+            # Format results to match the expected structure
+            search_results = []
+            for row in result:
+                id, text_chunk, page_id, url, domain, tags, job_id, distance = row
+
+                # Convert cosine distance to similarity score (1 - distance)
+                # This matches Qdrant's convention where higher scores are better
+                similarity_score = 1.0 - float(distance)
+
+                search_results.append(
+                    {
+                        "id": id,
+                        "score": similarity_score,
+                        "payload": {
+                            "text": text_chunk,
+                            "page_id": page_id,
+                            "url": url,
+                            "domain": domain,
+                            "tags": tags,
+                            "job_id": job_id,
+                        },
+                    }
+                )
+
+            return search_results
 
         except Exception as e:
             logger.error(f"Error searching vectors: {str(e)}")
