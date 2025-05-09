@@ -88,7 +88,8 @@ async def test_index_vector(mock_duckdb_connection):
         point_id = await indexer.index_vector(sample_embedding, payload)
 
         # Check that execute was called with the correct arguments
-        mock_duckdb_connection.execute.assert_called_once()
+        # First call checks if table exists, second call is the INSERT
+        assert mock_duckdb_connection.execute.call_count == 2
         call_args = mock_duckdb_connection.execute.call_args
         assert "INSERT INTO test_table" in call_args[0][0]
         assert call_args[0][1][0] == "12345678-1234-5678-1234-567812345678"
@@ -105,7 +106,8 @@ async def test_index_vector(mock_duckdb_connection):
         point_id = await indexer.index_vector(sample_embedding, payload, point_id=provided_id)
 
         # Check that execute was called with the correct arguments
-        mock_duckdb_connection.execute.assert_called_once()
+        # First call checks if table exists, second call is the INSERT
+        assert mock_duckdb_connection.execute.call_count == 2
         call_args = mock_duckdb_connection.execute.call_args
         assert "INSERT INTO test_table" in call_args[0][0]
         assert call_args[0][1][0] == provided_id
@@ -152,8 +154,12 @@ async def test_index_vector_error_handling(mock_duckdb_connection):
     sample_embedding = [0.1] * VECTOR_SIZE
 
     with patch("src.common.indexer.get_duckdb_connection", return_value=mock_duckdb_connection):
-        # We need to handle the LOAD vss call first, then simulate an error on the INSERT
-        mock_duckdb_connection.execute.side_effect = [None, Exception("Database error")]
+        # First load VSS in init, then handle table check, then simulate error on INSERT
+        mock_duckdb_connection.execute.side_effect = [
+            None,  # LOAD vss in __init__
+            MagicMock(fetchone=MagicMock(return_value=[1])),  # Table check returns table exists
+            Exception("Database error"),  # Error on INSERT
+        ]
 
         indexer = VectorIndexer()
 
@@ -463,8 +469,14 @@ async def test_search_error_handling(mock_duckdb_connection):
     query_vector = [0.1] * VECTOR_SIZE
 
     with patch("src.common.indexer.get_duckdb_connection", return_value=mock_duckdb_connection):
-        # First handle the LOAD vss; call, then simulate an error on search
-        mock_duckdb_connection.execute.side_effect = [None, Exception("Search error")]
+        # First handle the LOAD vss; call, then handle table check, then simulate an error on search
+        mock_duckdb_connection.execute.side_effect = [
+            None,  # LOAD vss in __init__
+            MagicMock(
+                fetchone=MagicMock(return_value=[1])
+            ),  # For any table check that might happen
+            Exception("Search error"),  # Error on actual search
+        ]
 
         indexer = VectorIndexer()
 
@@ -473,8 +485,8 @@ async def test_search_error_handling(mock_duckdb_connection):
 
 
 @pytest.mark.unit
-@pytest.mark.skip(reason="Requires actual DuckDB with VSS extension")
 @pytest.mark.async_test
+@pytest.mark.requires_vss
 async def test_vectorindexer_with_real_duckdb(in_memory_duckdb_connection):
     """Test the DuckDB implementation of VectorIndexer with a real in-memory database.
 
