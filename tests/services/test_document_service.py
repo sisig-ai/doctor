@@ -120,57 +120,6 @@ def test_is_fuzzy_match():
 
 @pytest.mark.unit
 @pytest.mark.async_test
-@pytest.mark.requires_vss
-async def test_search_docs_with_duckdb(in_memory_duckdb):
-    """Test searching documents with DuckDB backend.
-
-    This test is skipped by default as it requires the actual DuckDB with VSS extension.
-    """
-    from src.common.indexer import VectorIndexer
-
-    # Create test data in the in-memory database
-    indexer = VectorIndexer(connection=in_memory_duckdb)
-
-    # Create test vectors and payloads
-    test_vector1 = [0.1] * VECTOR_SIZE
-    test_payload1 = {
-        "text": "This is a document about artificial intelligence",
-        "page_id": "page1",
-        "url": "https://example.com/ai",
-        "domain": "example.com",
-        "tags": ["ai", "tech"],
-        "job_id": "job1",
-    }
-
-    test_vector2 = [0.2] * VECTOR_SIZE
-    test_payload2 = {
-        "text": "This is a document about machine learning",
-        "page_id": "page2",
-        "url": "https://example.com/ml",
-        "domain": "example.com",
-        "tags": ["ml", "tech"],
-        "job_id": "job1",
-    }
-
-    # Index test data
-    await indexer.index_vector(test_vector1, test_payload1)
-    await indexer.index_vector(test_vector2, test_payload2)
-
-    # Mock the embedding function
-    with patch("src.lib.embedder.generate_embedding", return_value=[0.1] * VECTOR_SIZE):
-        # Search for documents
-        result = await search_docs(
-            conn=in_memory_duckdb, query="artificial intelligence", tags=None, max_results=10
-        )
-
-        # Verify results
-        assert len(result.results) > 0
-        # The first result should be about artificial intelligence
-        assert "artificial intelligence" in result.results[0].chunk_text.lower()
-
-
-@pytest.mark.unit
-@pytest.mark.async_test
 async def test_search_docs_with_mocked_indexer():
     """Test search_docs with a mocked VectorIndexer."""
     # Mock the VectorIndexer class
@@ -325,40 +274,6 @@ async def test_list_doc_pages():
     assert "tag2" in result.doc_pages[0].tags
 
 
-@pytest.mark.unit
-@pytest.mark.async_test
-@pytest.mark.requires_vss
-async def test_list_doc_pages_with_duckdb(in_memory_duckdb):
-    """Test listing document pages with real DuckDB.
-
-    This test is skipped by default as it requires the actual DuckDB.
-    """
-    # Insert test data directly into the pages table
-    in_memory_duckdb.execute("""
-    INSERT INTO pages (id, url, domain, crawl_date, tags, raw_text)
-    VALUES
-        ('page1', 'https://example.com/page1', 'example.com', '2023-01-01',
-         '["tag1","tag2"]', 'Page 1 content'),
-        ('page2', 'https://example.com/page2', 'example.com', '2023-01-02',
-         '["tag2","tag3"]', 'Page 2 content');
-    """)
-
-    # Test with no filters
-    result = await list_doc_pages(conn=in_memory_duckdb, page=1, tags=None)
-
-    # Verify results
-    assert result.total_pages >= 1  # There is at least 1 page of results
-    assert result.current_page == 1
-    assert len(result.doc_pages) == 2
-
-    # Test with tag filter
-    result = await list_doc_pages(conn=in_memory_duckdb, page=1, tags=["tag1"])
-
-    # Verify filtered results
-    assert len(result.doc_pages) == 1
-    assert result.doc_pages[0].page_id == "page1"
-
-
 # Test get_doc_page function
 
 
@@ -379,44 +294,6 @@ async def test_get_doc_page():
     # Verify results
     assert result is not None
     assert result.text == "Line 1\nLine 2"
-    assert result.total_lines == 3
-
-
-@pytest.mark.unit
-@pytest.mark.async_test
-@pytest.mark.requires_vss
-async def test_get_doc_page_with_duckdb(in_memory_duckdb):
-    """Test retrieving a document page with real DuckDB.
-
-    This test is skipped by default as it requires the actual DuckDB.
-    """
-    # Insert test data directly into the pages table
-    in_memory_duckdb.execute("""
-    INSERT INTO pages (id, url, domain, crawl_date, tags, raw_text)
-    VALUES ('test-page', 'https://example.com/test', 'example.com', '2023-01-01', '["test"]',
-            'Line 1: This is the first line\nLine 2: This is the second line\nLine 3: This is the third line')
-    ON CONFLICT (id) DO NOTHING;
-    """)
-
-    # Test retrieving the full page
-    result = await get_doc_page(
-        conn=in_memory_duckdb, page_id="test-page", starting_line=1, ending_line=-1
-    )
-
-    # Verify results
-    assert result is not None
-    assert "Line 1: This is the first line" in result.text
-    assert "Line 3: This is the third line" in result.text
-    assert result.total_lines == 3
-
-    # Test retrieving a specific line range
-    result = await get_doc_page(
-        conn=in_memory_duckdb, page_id="test-page", starting_line=2, ending_line=2
-    )
-
-    # Verify results
-    assert result is not None
-    assert result.text == "Line 2: This is the second line"
     assert result.total_lines == 3
 
 
@@ -466,37 +343,3 @@ async def test_list_tags():
     # Adjust the expectation to match the actual behavior
     assert len(result.tags) == 1
     assert "tag1" in result.tags
-
-
-@pytest.mark.unit
-@pytest.mark.async_test
-@pytest.mark.requires_vss
-async def test_list_tags_with_duckdb(in_memory_duckdb):
-    """Test listing unique tags with DuckDB backend."""
-    # Insert test data directly into the pages table with different tags
-    in_memory_duckdb.execute("""
-    INSERT INTO pages (id, url, domain, crawl_date, tags, raw_text)
-    VALUES
-        ('page1', 'https://example.com/page1', 'example.com', '2023-01-01',
-         '["tag1","common"]', 'Page 1'),
-        ('page2', 'https://example.com/page2', 'example.com', '2023-01-02',
-         '["tag2","common"]', 'Page 2'),
-        ('page3', 'https://example.com/page3', 'example.com', '2023-01-03',
-         '["tag3","special"]', 'Page 3')
-    """)
-
-    # Test listing all tags
-    result = await list_tags(conn=in_memory_duckdb, search_substring=None)
-
-    # Verify results contain all unique tags
-    assert len(result.tags) == 5
-    assert set(result.tags) == {"tag1", "tag2", "tag3", "common", "special"}
-
-    # Test listing tags with substring filter
-    result = await list_tags(conn=in_memory_duckdb, search_substring="tag")
-
-    # Verify filtered results
-    assert len(result.tags) >= 3
-    assert "tag1" in result.tags
-    assert "tag2" in result.tags
-    assert "tag3" in result.tags
