@@ -110,9 +110,16 @@ pytest --cov=src --cov-report=term-missing
   - `test_crawler.py`: Tests for the crawler module
   - `test_chunker.py`: Tests for the chunker module
   - `test_embedder.py`: Tests for the embedder module
-  - `test_indexer.py`: Tests for the indexer module
   - `test_database.py`: Tests for the database module
-  - `test_processor.py`: Tests for the processor module
+- 📁 `tests/common/`: Tests for common modules
+  - `test_indexer.py`: Tests for the vector indexing functionality
+  - `test_processor.py`: Tests for the document processing pipeline
+- 📁 `tests/services/`: Tests for service layer
+  - `test_admin_service.py`: Tests for admin service
+  - `test_document_service.py`: Tests for document service
+  - `test_job_service.py`: Tests for job service
+- 📁 `tests/api/`: Tests for API endpoints
+  - `test_documents_api.py`: Tests for document endpoints
 
 ## 🧹 Code Quality
 

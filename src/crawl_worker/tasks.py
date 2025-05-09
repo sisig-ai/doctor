@@ -278,7 +278,6 @@ def delete_docs(
 
             conditions.append(f"({' OR '.join(tag_conditions)})")
 
-        # First get the IDs of pages that will be deleted for Qdrant deletion
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         # Get the IDs of pages that will be deleted
