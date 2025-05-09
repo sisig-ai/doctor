@@ -24,7 +24,7 @@ DB_RETRY_ATTEMPTS = int(os.getenv("DB_RETRY_ATTEMPTS", "5"))
 DB_RETRY_DELAY_SEC = float(os.getenv("DB_RETRY_DELAY_SEC", "0.5"))
 
 # OpenAI settings
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "dummy_key_for_testing")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 EMBEDDING_MODEL = "openai/text-embedding-ada-002"
 
 # Web service settings

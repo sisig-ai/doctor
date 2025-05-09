@@ -11,6 +11,7 @@ from src.common.config import (
     REDIS_URI,
     WEB_SERVICE_HOST,
     WEB_SERVICE_PORT,
+    check_config,
 )
 from src.common.db_setup import (
     init_databases,
@@ -55,6 +56,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Initialize databases in read-only mode for the web service
     init_databases(read_only=True)
     logger.info("Database initialization complete")
+    if not check_config():
+        logger.error("Invalid configuration. Exiting.")
+        exit(1)
     yield
     logger.info("Shutting down application")
 

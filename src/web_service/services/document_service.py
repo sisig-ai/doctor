@@ -100,6 +100,7 @@ async def search_docs(
     query: str,
     tags: Optional[List[str]] = None,
     max_results: int = 10,
+    return_full_document_text: bool = False,
 ) -> SearchDocsResponse:
     """
     Search for documents using semantic search.
@@ -110,7 +111,7 @@ async def search_docs(
         query: The search query
         tags: Optional tags to filter by
         max_results: Maximum number of results to return
-
+        return_full_document_text: Whether to return the full document text instead of the matching chunks only
     Returns:
         SearchDocsResponse: Search results
     """
@@ -157,7 +158,12 @@ async def search_docs(
             chunk_id = result.id
             score = result.score
             page_id = result.payload.get("page_id")
-            chunk_text = result.payload.get("text")
+
+            if return_full_document_text:
+                doc = await get_doc_page(conn, page_id)
+                chunk_text = doc.text
+            else:
+                chunk_text = result.payload.get("text")
             result_tags = result.payload.get("tags", [])
             url = result.payload.get("url")
 
@@ -289,7 +295,7 @@ async def get_doc_page(
         conn: Connected DuckDB connection
         page_id: The page ID
         starting_line: Line to view from (1-based)
-        ending_line: Line to view up to (1-based)
+        ending_line: Line to view up to (1-based). Set to -1 to view the entire page.
 
     Returns:
         GetDocPageResponse: Document page text
@@ -325,9 +331,9 @@ async def get_doc_page(
         )
         starting_line = 1
 
-    if ending_line > total_lines:
+    if (ending_line != -1 and ending_line > total_lines) or (ending_line == -1):
         logger.debug(
-            f"Ending line {ending_line} exceeds total lines {total_lines}, capping at {total_lines}"
+            f"Ending line {ending_line} exceeds total lines {total_lines} or is -1, capping at {total_lines}"
         )
         ending_line = total_lines
 

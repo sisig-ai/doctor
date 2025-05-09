@@ -33,6 +33,10 @@ async def search_docs_endpoint(
     query: str = Query(..., description="The search string to query the database with"),
     tags: Optional[List[str]] = Query(None, description="Tags to limit the search with"),
     max_results: int = Query(10, description="Maximum number of results to return", ge=1, le=100),
+    return_full_document_text: bool = Query(
+        False,
+        description="Whether to return the full document text instead of the matching chunks only",
+    ),
 ):
     """
     Search for documents using semantic search. Use `get_doc_page` to get the full text of a document page.
@@ -46,7 +50,7 @@ async def search_docs_endpoint(
         Search results
     """
     logger.info(
-        f"API: Searching docs with query: '{query}', tags: {tags}, max_results: {max_results}"
+        f"API: Searching docs with query: '{query}', tags: {tags}, max_results: {max_results}, return_full_document_text: {return_full_document_text}"
     )
 
     try:
@@ -58,7 +62,9 @@ async def search_docs_endpoint(
         conn = await get_duckdb_connection_with_retry()
         try:
             # Call the service function
-            response = await search_docs(qdrant_client, conn, query, tags, max_results)
+            response = await search_docs(
+                qdrant_client, conn, query, tags, max_results, return_full_document_text
+            )
             return response
         except Exception as db_error:
             logger.error(f"Database error during search: {str(db_error)}")
@@ -106,7 +112,9 @@ async def list_doc_pages_endpoint(
 async def get_doc_page_endpoint(
     page_id: str = Query(..., description="The page ID to retrieve"),
     starting_line: int = Query(1, description="Line to view from", ge=1),
-    ending_line: int = Query(100, description="Line to view up to", ge=1),
+    ending_line: int = Query(
+        -1, description="Line to view up to. Set to -1 to view the entire page."
+    ),
 ):
     """
     Get the full text of a document page. Use `search_docs` or `list_doc_pages` to get the page IDs.
@@ -114,7 +122,7 @@ async def get_doc_page_endpoint(
     Args:
         page_id: The page ID
         starting_line: Line to view from (1-based)
-        ending_line: Line to view up to (1-based)
+        ending_line: Line to view up to (1-based). Set to -1 to view the entire page.
 
     Returns:
         Document page text
