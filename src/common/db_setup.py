@@ -6,14 +6,8 @@ from typing import Optional, List
 import json
 
 import duckdb
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qdrant_models
 
 from .config import (
-    QDRANT_HOST,
-    QDRANT_PORT,
-    QDRANT_COLLECTION_NAME,
-    VECTOR_SIZE,
     DUCKDB_PATH,
     DATA_DIR,
 )
@@ -51,48 +45,19 @@ CREATE OR REPLACE TABLE pages (
 """
 
 
-def get_qdrant_client() -> QdrantClient:
-    """Gets a Qdrant client using configuration settings.
-
-    Returns:
-        QdrantClient: The configured Qdrant client.
-    """
-    logger.info(f"Connecting to Qdrant at {QDRANT_HOST}:{QDRANT_PORT}")
-    return QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
-
-
-def ensure_qdrant_collection(client: Optional[QdrantClient] = None) -> None:
-    """Ensures the Qdrant collection exists, creating it if necessary.
-
-    Args:
-        client: An optional Qdrant client instance. If None, a new client is created.
-    """
-    if client is None:
-        client = get_qdrant_client()
-
-    # Check if collection exists
-    try:
-        collections = client.get_collections().collections
-        collection_names = [collection.name for collection in collections]
-    except Exception as e:
-        logger.error(f"Could not connect to Qdrant to check collections: {e}")
-        # Optionally, re-raise or handle connection failure
-        return
-
-    if QDRANT_COLLECTION_NAME not in collection_names:
-        logger.info(f"Creating Qdrant collection: {QDRANT_COLLECTION_NAME}")
-        try:
-            client.create_collection(
-                collection_name=QDRANT_COLLECTION_NAME,
-                vectors_config=qdrant_models.VectorParams(
-                    size=VECTOR_SIZE,
-                    distance=qdrant_models.Distance.COSINE,
-                ),
-            )
-        except Exception as e:
-            logger.error(f"Failed to create Qdrant collection '{QDRANT_COLLECTION_NAME}': {e}")
-    else:
-        logger.info(f"Qdrant collection already exists: {QDRANT_COLLECTION_NAME}")
+# Define document embeddings table creation schema
+CREATE_DOCUMENT_EMBEDDINGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS document_embeddings (
+    id BIGSERIAL PRIMARY KEY,
+    embedding FLOAT4[1536] NOT NULL,
+    text_chunk VARCHAR,
+    page_id VARCHAR,
+    url VARCHAR,
+    domain VARCHAR,
+    tags VARCHAR[],
+    job_id VARCHAR
+);
+"""
 
 
 def get_duckdb_connection(read_only: bool = False) -> duckdb.DuckDBPyConnection:
@@ -234,8 +199,62 @@ def deserialize_tags(tags_json: str) -> List[str]:
         return []  # Return empty list on decode error
 
 
+def ensure_duckdb_vss_extension(conn: Optional[duckdb.DuckDBPyConnection] = None) -> None:
+    """Ensures the DuckDB VSS extension is loaded and embeddings table exists.
+
+    Args:
+        conn: An optional DuckDB connection. If None, a new connection is created.
+    """
+    close_conn = False
+    if conn is None:
+        try:
+            conn = get_duckdb_connection()
+            close_conn = True
+        except Exception:
+            logger.error("Cannot ensure DuckDB VSS extension without a valid connection.")
+            return
+
+    try:
+        # Install and load VSS extension
+        try:
+            conn.execute("INSTALL vss;")
+            logger.info("DuckDB VSS extension installed")
+        except Exception as e:
+            # If extension is already installed, this will fail, but that's okay
+            logger.debug(f"VSS extension installation attempt: {str(e)}")
+
+        conn.execute("LOAD vss;")
+        logger.info("DuckDB VSS extension loaded")
+
+        # Create embeddings table
+        conn.execute(CREATE_DOCUMENT_EMBEDDINGS_TABLE_SQL)
+        logger.info("DuckDB document_embeddings table created/verified")
+
+        # Create HNSW index if it doesn't exist
+        # Note: DuckDB will ignore this if the index already exists (no IF NOT EXISTS support for indexes)
+        try:
+            conn.execute("""
+            CREATE INDEX hnsw_index_on_embeddings
+            ON document_embeddings
+            USING HNSW (embedding)
+            WITH (metric = 'cosine');
+            """)
+            logger.info("Created HNSW index on document_embeddings.embedding")
+        except Exception as e:
+            # Check if error is related to index already existing
+            if "already exists" in str(e):
+                logger.info("HNSW index on document_embeddings.embedding already exists")
+            else:
+                raise
+    except Exception as e:
+        logger.error(f"Failed to set up DuckDB VSS and embeddings table: {e}")
+    finally:
+        if close_conn and conn:
+            conn.close()
+
+
 def init_databases(read_only: bool = False) -> None:
-    """Initializes all databases (DuckDB and Qdrant), creating them if they don't exist.
+    """Initializes all databases (DuckDB), creating them if they don't exist.
 
     Args:
         read_only: If True, initializes DuckDB in read-only mode (tables are not created).
@@ -251,53 +270,16 @@ def init_databases(read_only: bool = False) -> None:
             # Ensure the DuckDB tables exist with the correct schema
             conn = get_duckdb_connection()
             ensure_duckdb_tables(conn)
-            conn.close()
 
-        # Ensure the Qdrant collection exists
-        ensure_qdrant_collection()
+            # Ensure VSS extension is loaded and embeddings table exists
+            ensure_duckdb_vss_extension(conn)
+
+            conn.close()
 
         logger.info("Database initialization complete")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         raise
-
-
-async def get_qdrant_client_with_retry(
-    max_attempts: int = 3, retry_delay: float = 0.1
-) -> QdrantClient:
-    """
-    Get a Qdrant client with retry logic.
-
-    Args:
-        max_attempts: Maximum number of connection attempts
-        retry_delay: Initial delay between retries (doubles after each attempt)
-
-    Returns:
-        QdrantClient: Connected Qdrant client
-
-    Raises:
-        Exception: If connection fails after all retries
-    """
-    attempts = 0
-    last_error = None
-
-    while attempts < max_attempts:
-        attempts += 1
-        try:
-            client = get_qdrant_client()
-            # Verify the connection works
-            ensure_qdrant_collection(client)
-            return client
-        except Exception as e:
-            last_error = e
-            logger.warning(f"Qdrant connection attempt {attempts}/{max_attempts} failed: {str(e)}")
-            if attempts < max_attempts:
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-
-    # If we get here, all attempts failed
-    logger.error(f"Failed to connect to Qdrant after {max_attempts} attempts")
-    raise last_error or Exception("Failed to connect to Qdrant")
 
 
 async def get_duckdb_connection_with_retry(

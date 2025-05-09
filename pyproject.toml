@@ -14,7 +14,6 @@ dependencies = [
     "litellm",
     "openai",
     "duckdb",
-    "qdrant-client",
     "pydantic>=2.0.0",
     "httpx",
     "python-multipart",

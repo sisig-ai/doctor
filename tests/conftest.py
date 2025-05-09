@@ -2,6 +2,10 @@
 
 import pytest
 import asyncio
+import random
+from typing import List
+
+from src.common.config import VECTOR_SIZE
 
 
 @pytest.fixture
@@ -35,11 +39,16 @@ def sample_text():
 
 @pytest.fixture
 def sample_embedding():
-    """Sample embedding vector for testing."""
-    import random
-
+    """Sample embedding vector for testing (legacy version: 384 dim)."""
     random.seed(42)  # For reproducibility
     return [random.random() for _ in range(384)]
+
+
+@pytest.fixture
+def sample_embedding_full_size() -> List[float]:
+    """Sample embedding vector with the full VECTOR_SIZE dimension for DuckDB tests."""
+    random.seed(42)  # For reproducibility
+    return [random.random() for _ in range(VECTOR_SIZE)]
 
 
 @pytest.fixture
@@ -86,3 +95,66 @@ def page_id():
 def sample_tags():
     """Sample tags for testing."""
     return ["test", "example", "documentation"]
+
+
+@pytest.fixture
+def in_memory_duckdb_connection():
+    """Create an in-memory DuckDB connection for testing.
+
+    This connection has the proper setup for vector search:
+    - VSS extension loaded
+    - document_embeddings table created with the proper schema
+    - HNSW index created
+    - pages table created (for document service tests)
+
+    Usage:
+        def test_something(in_memory_duckdb_connection):
+            # Use the connection for testing
+            ...
+    """
+    import duckdb
+
+    conn = duckdb.connect(":memory:")
+    conn.execute("LOAD vss;")
+
+    # Create document_embeddings table
+    conn.execute(f"""
+    CREATE TABLE document_embeddings (
+        id BIGSERIAL PRIMARY KEY,
+        embedding FLOAT4[{VECTOR_SIZE}] NOT NULL,
+        text_chunk VARCHAR,
+        page_id VARCHAR,
+        url VARCHAR,
+        domain VARCHAR,
+        tags VARCHAR[],
+        job_id VARCHAR
+    );
+    """)
+
+    # Create HNSW index
+    try:
+        conn.execute("""
+        CREATE INDEX hnsw_index_on_embeddings
+        ON document_embeddings
+        USING HNSW (embedding)
+        WITH (metric = 'cosine');
+        """)
+    except Exception as e:
+        # Ignore "already exists" errors
+        if "already exists" not in str(e):
+            raise
+
+    # Create pages table for document service tests
+    conn.execute("""
+    CREATE TABLE pages (
+        id VARCHAR PRIMARY KEY,
+        url VARCHAR,
+        domain VARCHAR,
+        crawl_date VARCHAR,
+        tags VARCHAR,
+        raw_text VARCHAR
+    );
+    """)
+
+    yield conn
+    conn.close()

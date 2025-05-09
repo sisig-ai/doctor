@@ -10,13 +10,13 @@ Doctor provides a complete stack for:
 - 🕷️ Crawling web pages using crawl4ai
 - ✂️ Chunking text with LangChain
 - 🧩 Creating embeddings with OpenAI via litellm
-- 💾 Storing data in DuckDB and Qdrant
+- 💾 Storing data in DuckDB with vector search support
 - 🚀 Exposing search functionality via a FastAPI web service
 - 🔌 Making these capabilities available to LLMs through an MCP server
 
 ## 🧩 Components
 
-- **Qdrant Server** 📊: Vector database for storing and searching embeddings
+- **DuckDB** 📊: Database for storing document data and embeddings with vector search capabilities
 - **Redis** 📬: Message broker for asynchronous task processing
 - **Crawl Worker** 🕸️: Processes crawl jobs, chunks text, creates embeddings
 - **Web Server** 🌐: FastAPI service exposing endpoints for fetching, searching, and viewing data, and exposing the MCP server
