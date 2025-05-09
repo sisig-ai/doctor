@@ -66,5 +66,3 @@ services:
 networks:
   doctor-net:
     driver: bridge
-
-volumes:

@@ -78,6 +78,23 @@ class VectorIndexer:
         logger.debug(f"Indexing vector of dimension {len(vector)} with point_id={point_id}")
 
         try:
+            # First check if the table exists
+            try:
+                table_exists = self.conn.execute(
+                    f"SELECT count(*) FROM information_schema.tables WHERE table_name = '{self.table_name}'"
+                ).fetchone()[0]
+
+                if not table_exists:
+                    logger.error(
+                        f"Table '{self.table_name}' does not exist. Ensure database setup is complete."
+                    )
+                    raise Exception(
+                        f"Table '{self.table_name}' does not exist. Run database initialization first."
+                    )
+            except Exception as check_err:
+                logger.error(f"Error checking if table exists: {str(check_err)}")
+                raise
+
             # Extract payload fields
             text_chunk = payload.get("text", "")
             page_id = payload.get("page_id", "")
@@ -91,7 +108,7 @@ class VectorIndexer:
                 f"""
                 INSERT INTO {self.table_name}
                 (id, embedding, text_chunk, page_id, url, domain, tags, job_id)
-                VALUES (?, ?::FLOAT4[{VECTOR_SIZE}], ?, ?, ?, ?, ?::VARCHAR[], ?)
+                VALUES (?::VARCHAR, ?::FLOAT4[{VECTOR_SIZE}], ?, ?, ?, ?, ?::VARCHAR[], ?)
                 """,
                 (point_id, vector, text_chunk, page_id, url, domain, tags, job_id),
             )
@@ -162,7 +179,7 @@ class VectorIndexer:
                 f"""
                 INSERT INTO {self.table_name}
                 (id, embedding, text_chunk, page_id, url, domain, tags, job_id)
-                VALUES (?, ?::FLOAT4[{VECTOR_SIZE}], ?, ?, ?, ?, ?::VARCHAR[], ?)
+                VALUES (?::VARCHAR, ?::FLOAT4[{VECTOR_SIZE}], ?, ?, ?, ?, ?::VARCHAR[], ?)
                 """,
                 batch_data,
             )
