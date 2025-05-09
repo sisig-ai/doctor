@@ -100,11 +100,10 @@ def sample_tags():
 
 @pytest.fixture
 def in_memory_duckdb_connection():
-    import duckdb
-
     """Create an in-memory DuckDB connection for testing.
 
-    This connection has the proper setup for vector search:
+    This connection has the proper setup for vector search using the same
+    setup logic as the main application:
     - VSS extension loaded
     - document_embeddings table created with the proper schema
     - HNSW index created
@@ -115,57 +114,25 @@ def in_memory_duckdb_connection():
             # Use the connection for testing
             ...
     """
+    import duckdb
+    from src.common.db_setup import ensure_duckdb_tables, ensure_duckdb_vss_extension
 
+    # Create in-memory connection
     conn = duckdb.connect(":memory:")
 
-    # First install the VSS extension, then load it
     try:
-        conn.execute("INSTALL vss;")
-        conn.execute("LOAD vss;")
-    except Exception as e:
-        pytest.skip(f"DuckDB VSS extension not available: {e}")
+        # Use the same table creation functions as the main application
+        ensure_duckdb_tables(conn)
 
-    # Create document_embeddings table
-    conn.execute(f"""
-    CREATE TABLE document_embeddings (
-        id VARCHAR PRIMARY KEY,
-        embedding FLOAT4[{VECTOR_SIZE}] NOT NULL,
-        text_chunk VARCHAR,
-        page_id VARCHAR,
-        url VARCHAR,
-        domain VARCHAR,
-        tags VARCHAR[],
-        job_id VARCHAR
-    );
-    """)
+        # Try to set up VSS extension, but don't fail tests if it's not available
+        try:
+            ensure_duckdb_vss_extension(conn)
+        except Exception as e:
+            pytest.skip(f"DuckDB VSS extension not available: {e}")
 
-    # Create HNSW index
-    try:
-        conn.execute("""
-        CREATE INDEX hnsw_index_on_embeddings
-        ON document_embeddings
-        USING HNSW (embedding)
-        WITH (metric = 'cosine');
-        """)
-    except Exception as e:
-        # Ignore "already exists" errors
-        if "already exists" not in str(e):
-            pytest.skip(f"Could not create HNSW index: {e}")
-
-    # Create pages table for document service tests
-    conn.execute("""
-    CREATE TABLE pages (
-        id VARCHAR PRIMARY KEY,
-        url VARCHAR,
-        domain VARCHAR,
-        crawl_date VARCHAR,
-        tags VARCHAR,
-        raw_text VARCHAR
-    );
-    """)
-
-    yield conn
-    conn.close()
+        yield conn
+    finally:
+        conn.close()
 
 
 @pytest.fixture(autouse=True)
@@ -184,3 +151,27 @@ def skip_if_no_vss(request):
                 conn.close()
         except Exception:
             pytest.skip("Could not create test DuckDB connection")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_duckdb_database():
+    """
+    Ensure the DuckDB database file exists before running tests.
+
+    This fixture runs once per test session and initializes the database
+    if it doesn't exist yet, which is especially important for CI environments.
+    """
+    from src.common.db_setup import init_databases
+    from src.common.config import DUCKDB_PATH
+    import os
+
+    # Only initialize if the file doesn't exist
+    if not os.path.exists(DUCKDB_PATH):
+        print(f"Database file {DUCKDB_PATH} does not exist. Creating it for tests...")
+        try:
+            init_databases(read_only=False)
+            print(f"Successfully created database at {DUCKDB_PATH}")
+        except Exception as e:
+            print(f"Warning: Failed to create database: {e}")
+            # Don't fail the tests if we can't create the DB - individual tests
+            # that need it can handle the situation appropriately
