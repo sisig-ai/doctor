@@ -114,7 +114,6 @@ def in_memory_duckdb_connection():
             # Use the connection for testing
             ...
     """
-    import duckdb
     from src.common.db_setup import ensure_duckdb_tables, ensure_duckdb_vss_extension
 
     # Create in-memory connection
@@ -124,33 +123,12 @@ def in_memory_duckdb_connection():
         # Use the same table creation functions as the main application
         ensure_duckdb_tables(conn)
 
-        # Try to set up VSS extension, but don't fail tests if it's not available
-        try:
-            ensure_duckdb_vss_extension(conn)
-        except Exception as e:
-            pytest.skip(f"DuckDB VSS extension not available: {e}")
+        # Set up VSS extension
+        ensure_duckdb_vss_extension(conn)
 
         yield conn
     finally:
         conn.close()
-
-
-@pytest.fixture(autouse=True)
-def skip_if_no_vss(request):
-    """Skip tests that require VSS if it's not available."""
-    if request.node.get_closest_marker("requires_vss"):
-        try:
-            # Create a test connection to see if VSS is available
-            conn = duckdb.connect(":memory:")
-            try:
-                conn.execute("INSTALL vss;")
-                conn.execute("LOAD vss;")
-            except Exception as e:
-                pytest.skip(f"Test requires DuckDB with VSS extension: {e}")
-            finally:
-                conn.close()
-        except Exception:
-            pytest.skip("Could not create test DuckDB connection")
 
 
 @pytest.fixture(scope="session", autouse=True)

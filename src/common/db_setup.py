@@ -216,13 +216,14 @@ def ensure_duckdb_vss_extension(conn: Optional[duckdb.DuckDBPyConnection] = None
 
     try:
         # Install and load VSS extension
+        # Try to install the extension if it doesn't exist (will fail if already installed)
         try:
             conn.execute("INSTALL vss;")
             logger.info("DuckDB VSS extension installed")
-        except Exception as e:
-            # If extension is already installed, this will fail, but that's okay
-            logger.debug(f"VSS extension installation attempt: {str(e)}")
+        except Exception:
+            logger.info("VSS extension already installed")
 
+        # Load the VSS extension
         conn.execute("LOAD vss;")
         logger.info("DuckDB VSS extension loaded")
 
