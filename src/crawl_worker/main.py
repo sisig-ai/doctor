@@ -30,29 +30,44 @@ def main() -> int:
 
         # Double-check that the document_embeddings table exists
         conn = get_duckdb_connection()
-        table_count = conn.execute(
+        if conn is None:
+            logger.error("Failed to get DuckDB connection")
+            return 1
+
+        result = conn.execute(
             "SELECT count(*) FROM information_schema.tables WHERE table_name = 'document_embeddings'"
-        ).fetchone()[0]
+        ).fetchone()
+
+        if result is None:
+            logger.error("Failed to execute query to check for document_embeddings table")
+            return 1
+
+        table_count = result[0]
 
         if table_count == 0:
-            logger.error("document_embeddings table is still missing after initialization!")
+            logger.exception("document_embeddings table is still missing after initialization!")
             return 1
         else:
             logger.info("Verified document_embeddings table exists")
 
         conn.close()
-    except Exception as db_error:
-        logger.error(f"Database initialization failed: {str(db_error)}")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {str(e)}")
         return 1
 
     # Connect to Redis
-    logger.info(f"Connecting to Redis at {REDIS_URI}")
-    redis_conn = redis.from_url(REDIS_URI)
+    try:
+        logger.info(f"Connecting to Redis at {REDIS_URI}")
+        redis_conn = redis.from_url(REDIS_URI)
 
-    # Start worker
-    logger.info("Starting worker, listening on queue: worker")
-    worker = Worker(["worker"], connection=redis_conn)
-    worker.work(with_scheduler=True)
+        # Start worker
+        logger.info("Starting worker, listening on queue: worker")
+        worker = Worker(["worker"], connection=redis_conn)
+        worker.work(with_scheduler=True)
+        return 0  # Return success if worker completes normally
+    except Exception as redis_error:
+        logger.error(f"Redis worker error: {str(redis_error)}")
+        return 1
 
 
 if __name__ == "__main__":

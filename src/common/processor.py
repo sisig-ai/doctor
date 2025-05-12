@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 async def process_crawl_result(
     page_result: Any,
     job_id: str,
-    tags: List[str] = None,
+    tags: List[str] | None = None,
     max_concurrent_embeddings: int = 5,
 ) -> str:
     """
@@ -36,7 +36,7 @@ async def process_crawl_result(
         The ID of the processed page
     """
     if tags is None:
-        tags = []
+        tags = []  # Initialize as empty list instead of None
 
     try:
         logger.info(f"Processing page: {page_result.url}")
@@ -116,11 +116,12 @@ async def process_crawl_result(
         raise
     finally:
         # Close the DuckDB connection if it exists
-        if "indexer" in locals() and hasattr(indexer, "conn"):
+        indexer_var = locals().get("indexer")
+        if indexer_var and hasattr(indexer_var, "conn"):
             try:
                 # The connection will be closed by the VectorIndexer's destructor
                 # but we explicitly set _own_connection to False since we created it
-                indexer._own_connection = True
+                indexer_var._own_connection = True
             except Exception as close_error:
                 logger.warning(f"Error marking connection for closure: {close_error}")
 
@@ -128,7 +129,7 @@ async def process_crawl_result(
 async def process_page_batch(
     page_results: List[Any],
     job_id: str,
-    tags: List[str] = None,
+    tags: List[str] | None = None,
     batch_size: int = 10,
 ) -> List[str]:
     """
