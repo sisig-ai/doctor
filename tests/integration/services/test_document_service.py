@@ -15,7 +15,6 @@ from src.web_service.services.document_service import (
 
 @pytest.mark.integration
 @pytest.mark.async_test
-@pytest.mark.requires_vss
 async def test_search_docs_with_duckdb(in_memory_duckdb_connection):
     """Test searching documents with DuckDB backend."""
     # Create test data in the in-memory database
@@ -78,7 +77,6 @@ async def test_search_docs_with_duckdb(in_memory_duckdb_connection):
 
 @pytest.mark.integration
 @pytest.mark.async_test
-@pytest.mark.requires_vss
 async def test_list_doc_pages_with_duckdb(in_memory_duckdb_connection):
     """Test listing document pages with DuckDB backend."""
     # Insert test data directly into the pages table
@@ -111,7 +109,6 @@ async def test_list_doc_pages_with_duckdb(in_memory_duckdb_connection):
 
 @pytest.mark.integration
 @pytest.mark.async_test
-@pytest.mark.requires_vss
 async def test_get_doc_page_with_duckdb(in_memory_duckdb_connection):
     """Test retrieving a document page with DuckDB backend."""
     # Insert test data directly into the pages table
@@ -142,7 +139,6 @@ async def test_get_doc_page_with_duckdb(in_memory_duckdb_connection):
 
 @pytest.mark.integration
 @pytest.mark.async_test
-@pytest.mark.requires_vss
 async def test_list_tags_with_duckdb(in_memory_duckdb_connection):
     """Test listing unique tags with DuckDB backend."""
     # Insert test data directly into the pages table with different tags

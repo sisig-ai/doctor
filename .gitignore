@@ -60,3 +60,7 @@ Thumbs.db
 .coverage
 coverage.xml
 .aider*
+
+**/.claude/settings.local.json
+CLAUDE.md
+.claude/

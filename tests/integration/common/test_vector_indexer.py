@@ -7,7 +7,6 @@ from src.common.indexer import VectorIndexer
 
 @pytest.mark.integration
 @pytest.mark.async_test
-@pytest.mark.requires_vss
 async def test_vectorindexer_with_real_duckdb(in_memory_duckdb_connection):
     """Test the DuckDB implementation of VectorIndexer with a real in-memory database."""
     # Create VectorIndexer with the in-memory test connection

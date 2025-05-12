@@ -3,9 +3,6 @@
 import pytest
 import duckdb
 
-# Flag to track if VSS is available
-VSS_AVAILABLE = True
-
 
 @pytest.fixture
 def in_memory_duckdb_connection():
@@ -18,7 +15,6 @@ def in_memory_duckdb_connection():
     - HNSW index created
     - pages table created (for document service tests)
     """
-    global VSS_AVAILABLE
     from src.common.db_setup import ensure_duckdb_tables, ensure_duckdb_vss_extension
 
     conn = duckdb.connect(":memory:")
@@ -28,22 +24,9 @@ def in_memory_duckdb_connection():
         # Create base tables first
         ensure_duckdb_tables(conn)
 
-        # Try to set up VSS extension and embeddings tables
-        try:
-            ensure_duckdb_vss_extension(conn)
-        except Exception as e:
-            print(f"Warning: Could not set up VSS extension: {e}")
-            print("These tests require DuckDB with Vector Search Support.")
-            print("Some tests may be skipped or fail.")
-            VSS_AVAILABLE = False
+        # Set up VSS extension and embeddings tables
+        ensure_duckdb_vss_extension(conn)
 
         yield conn
     finally:
         conn.close()
-
-
-@pytest.fixture(autouse=True)
-def skip_if_no_vss(request):
-    """Skip tests that require VSS if it's not available."""
-    if request.node.get_closest_marker("requires_vss") and not VSS_AVAILABLE:
-        pytest.skip("Test requires DuckDB with VSS extension")
