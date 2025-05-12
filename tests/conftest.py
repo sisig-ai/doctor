@@ -2,6 +2,11 @@
 
 import pytest
 import asyncio
+import random
+import duckdb
+from typing import List
+
+from src.common.config import VECTOR_SIZE
 
 
 @pytest.fixture
@@ -35,11 +40,16 @@ def sample_text():
 
 @pytest.fixture
 def sample_embedding():
-    """Sample embedding vector for testing."""
-    import random
-
+    """Sample embedding vector for testing (legacy version: 384 dim)."""
     random.seed(42)  # For reproducibility
     return [random.random() for _ in range(384)]
+
+
+@pytest.fixture
+def sample_embedding_full_size() -> List[float]:
+    """Sample embedding vector with the full VECTOR_SIZE dimension for DuckDB tests."""
+    random.seed(42)  # For reproducibility
+    return [random.random() for _ in range(VECTOR_SIZE)]
 
 
 @pytest.fixture
@@ -86,3 +96,82 @@ def page_id():
 def sample_tags():
     """Sample tags for testing."""
     return ["test", "example", "documentation"]
+
+
+@pytest.fixture
+def in_memory_duckdb_connection():
+    """Create an in-memory DuckDB connection for testing.
+
+    This connection has the proper setup for vector search using the same
+    setup logic as the main application:
+    - VSS extension loaded
+    - document_embeddings table created with the proper schema
+    - HNSW index created
+    - pages table created (for document service tests)
+
+    Usage:
+        def test_something(in_memory_duckdb_connection):
+            # Use the connection for testing
+            ...
+    """
+    import duckdb
+    from src.common.db_setup import ensure_duckdb_tables, ensure_duckdb_vss_extension
+
+    # Create in-memory connection
+    conn = duckdb.connect(":memory:")
+
+    try:
+        # Use the same table creation functions as the main application
+        ensure_duckdb_tables(conn)
+
+        # Try to set up VSS extension, but don't fail tests if it's not available
+        try:
+            ensure_duckdb_vss_extension(conn)
+        except Exception as e:
+            pytest.skip(f"DuckDB VSS extension not available: {e}")
+
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture(autouse=True)
+def skip_if_no_vss(request):
+    """Skip tests that require VSS if it's not available."""
+    if request.node.get_closest_marker("requires_vss"):
+        try:
+            # Create a test connection to see if VSS is available
+            conn = duckdb.connect(":memory:")
+            try:
+                conn.execute("INSTALL vss;")
+                conn.execute("LOAD vss;")
+            except Exception as e:
+                pytest.skip(f"Test requires DuckDB with VSS extension: {e}")
+            finally:
+                conn.close()
+        except Exception:
+            pytest.skip("Could not create test DuckDB connection")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_duckdb_database():
+    """
+    Ensure the DuckDB database file exists before running tests.
+
+    This fixture runs once per test session and initializes the database
+    if it doesn't exist yet, which is especially important for CI environments.
+    """
+    from src.common.db_setup import init_databases
+    from src.common.config import DUCKDB_PATH
+    import os
+
+    # Only initialize if the file doesn't exist
+    if not os.path.exists(DUCKDB_PATH):
+        print(f"Database file {DUCKDB_PATH} does not exist. Creating it for tests...")
+        try:
+            init_databases(read_only=False)
+            print(f"Successfully created database at {DUCKDB_PATH}")
+        except Exception as e:
+            print(f"Warning: Failed to create database: {e}")
+            # Don't fail the tests if we can't create the DB - individual tests
+            # that need it can handle the situation appropriately

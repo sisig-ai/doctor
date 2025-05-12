@@ -8,9 +8,10 @@ from itertools import islice
 from src.lib.crawler import extract_page_text
 from src.lib.chunker import TextChunker
 from src.lib.embedder import generate_embedding
-from src.common.indexer import VectorIndexer  # Updated import
+from src.common.indexer import VectorIndexer
 from src.lib.database import store_page, update_job_status
 from src.common.logger import get_logger
+from src.common.db_setup import get_duckdb_connection
 
 # Configure logging
 logger = get_logger(__name__)
@@ -19,7 +20,7 @@ logger = get_logger(__name__)
 async def process_crawl_result(
     page_result: Any,
     job_id: str,
-    tags: List[str] = None,
+    tags: List[str] | None = None,
     max_concurrent_embeddings: int = 5,
 ) -> str:
     """
@@ -35,7 +36,7 @@ async def process_crawl_result(
         The ID of the processed page
     """
     if tags is None:
-        tags = []
+        tags = []  # Initialize as empty list instead of None
 
     try:
         logger.info(f"Processing page: {page_result.url}")
@@ -53,7 +54,10 @@ async def process_crawl_result(
 
         # Initialize components
         chunker = TextChunker()
-        indexer = VectorIndexer()
+
+        # Get a DuckDB connection for the vector indexer
+        duckdb_conn = get_duckdb_connection()
+        indexer = VectorIndexer(connection=duckdb_conn)
 
         # Split text into chunks
         chunks = chunker.split_text(page_text)
@@ -110,12 +114,22 @@ async def process_crawl_result(
     except Exception as e:
         logger.error(f"Error processing page {page_result.url}: {str(e)}")
         raise
+    finally:
+        # Close the DuckDB connection if it exists
+        indexer_var = locals().get("indexer")
+        if indexer_var and hasattr(indexer_var, "conn"):
+            try:
+                # The connection will be closed by the VectorIndexer's destructor
+                # but we explicitly set _own_connection to False since we created it
+                indexer_var._own_connection = True
+            except Exception as close_error:
+                logger.warning(f"Error marking connection for closure: {close_error}")
 
 
 async def process_page_batch(
     page_results: List[Any],
     job_id: str,
-    tags: List[str] = None,
+    tags: List[str] | None = None,
     batch_size: int = 10,
 ) -> List[str]:
     """

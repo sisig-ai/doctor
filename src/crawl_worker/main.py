@@ -4,7 +4,7 @@ import redis
 from rq import Worker
 
 from src.common.config import REDIS_URI, check_config
-from src.common.db_setup import init_databases
+from src.common.db_setup import init_databases, get_duckdb_connection
 from src.common.logger import get_logger
 
 # Get logger for this module
@@ -23,16 +23,51 @@ def main() -> int:
         return 1
 
     # Initialize databases with write access
-    init_databases(read_only=False)
+    try:
+        logger.info("Initializing databases for the crawl worker...")
+        init_databases(read_only=False)
+        logger.info("Database initialization completed successfully")
+
+        # Double-check that the document_embeddings table exists
+        conn = get_duckdb_connection()
+        if conn is None:
+            logger.error("Failed to get DuckDB connection")
+            return 1
+
+        result = conn.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'document_embeddings'"
+        ).fetchone()
+
+        if result is None:
+            logger.error("Failed to execute query to check for document_embeddings table")
+            return 1
+
+        table_count = result[0]
+
+        if table_count == 0:
+            logger.exception("document_embeddings table is still missing after initialization!")
+            return 1
+        else:
+            logger.info("Verified document_embeddings table exists")
+
+        conn.close()
+    except Exception as e:
+        logger.error(f"Database initialization failed: {str(e)}")
+        return 1
 
     # Connect to Redis
-    logger.info(f"Connecting to Redis at {REDIS_URI}")
-    redis_conn = redis.from_url(REDIS_URI)
+    try:
+        logger.info(f"Connecting to Redis at {REDIS_URI}")
+        redis_conn = redis.from_url(REDIS_URI)
 
-    # Start worker
-    logger.info("Starting worker, listening on queue: worker")
-    worker = Worker(["worker"], connection=redis_conn)
-    worker.work(with_scheduler=True)
+        # Start worker
+        logger.info("Starting worker, listening on queue: worker")
+        worker = Worker(["worker"], connection=redis_conn)
+        worker.work(with_scheduler=True)
+        return 0  # Return success if worker completes normally
+    except Exception as redis_error:
+        logger.error(f"Redis worker error: {str(redis_error)}")
+        return 1
 
 
 if __name__ == "__main__":

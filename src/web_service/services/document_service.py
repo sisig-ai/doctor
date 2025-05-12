@@ -2,11 +2,8 @@
 
 from typing import List, Optional
 import duckdb
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qdrant_models
 
 from src.common.db_setup import (
-    QDRANT_COLLECTION_NAME,
     deserialize_tags,
 )
 from src.common.models import (
@@ -95,7 +92,6 @@ def is_fuzzy_match(s1: str, s2: str, threshold: float = 0.7) -> bool:
 
 
 async def search_docs(
-    qdrant_client: QdrantClient,
     conn: duckdb.DuckDBPyConnection,
     query: str,
     tags: Optional[List[str]] = None,
@@ -106,7 +102,6 @@ async def search_docs(
     Search for documents using semantic search.
 
     Args:
-        qdrant_client: Connected Qdrant client
         conn: Connected DuckDB connection
         query: The search query
         tags: Optional tags to filter by
@@ -120,14 +115,8 @@ async def search_docs(
     # Prepare filter based on tags
     filter_conditions = None
     if tags and len(tags) > 0:
-        filter_conditions = qdrant_models.Filter(
-            must=[
-                qdrant_models.FieldCondition(
-                    key="tags",
-                    match=qdrant_models.MatchAny(any=tags),
-                )
-            ]
-        )
+        # Create a filter compatible with VectorIndexer.search method
+        filter_conditions = {"must": [{"key": "tags", "match": {"any": tags}}]}
         logger.debug(f"Applied tag filters: {tags}")
 
     results = []
@@ -135,18 +124,20 @@ async def search_docs(
     try:
         # Try semantic search
         from src.lib.embedder import generate_embedding
+        from src.common.indexer import VectorIndexer
 
         # Generate embedding for the query
         query_embedding = await generate_embedding(query)
         logger.debug("Generated embedding for search query")
 
-        # Search Qdrant
-        search_results = qdrant_client.search(
-            collection_name=QDRANT_COLLECTION_NAME,
+        # Initialize VectorIndexer with the existing connection
+        indexer = VectorIndexer(connection=conn)
+
+        # Search using the indexer
+        search_results = await indexer.search(
             query_vector=query_embedding,
             limit=max_results,
-            query_filter=filter_conditions,
-            with_payload=True,
+            filter_payload=filter_conditions,
         )
         logger.info(f"Found {len(search_results)} results from vector search")
 
@@ -155,17 +146,18 @@ async def search_docs(
 
         # Process results and keep only the highest scoring chunk per page
         for result in search_results:
-            chunk_id = result.id
-            score = result.score
-            page_id = result.payload.get("page_id")
+            chunk_id = result["id"]
+            score = result["score"]
+            payload = result["payload"]
+            page_id = payload.get("page_id")
 
             if return_full_document_text:
                 doc = await get_doc_page(conn, page_id)
                 chunk_text = doc.text
             else:
-                chunk_text = result.payload.get("text")
-            result_tags = result.payload.get("tags", [])
-            url = result.payload.get("url")
+                chunk_text = payload.get("text")
+            result_tags = payload.get("tags", [])
+            url = payload.get("url")
 
             if not page_id or not chunk_text:
                 logger.warning(f"Result {chunk_id} missing page_id or text in payload")

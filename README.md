@@ -10,13 +10,13 @@ Doctor provides a complete stack for:
 - 🕷️ Crawling web pages using crawl4ai
 - ✂️ Chunking text with LangChain
 - 🧩 Creating embeddings with OpenAI via litellm
-- 💾 Storing data in DuckDB and Qdrant
+- 💾 Storing data in DuckDB with vector search support
 - 🚀 Exposing search functionality via a FastAPI web service
 - 🔌 Making these capabilities available to LLMs through an MCP server
 
 ## 🧩 Components
 
-- **Qdrant Server** 📊: Vector database for storing and searching embeddings
+- **DuckDB** 📊: Database for storing document data and embeddings with vector search capabilities
 - **Redis** 📬: Message broker for asynchronous task processing
 - **Crawl Worker** 🕸️: Processes crawl jobs, chunks text, creates embeddings
 - **Web Server** 🌐: FastAPI service exposing endpoints for fetching, searching, and viewing data, and exposing the MCP server
@@ -110,9 +110,16 @@ pytest --cov=src --cov-report=term-missing
   - `test_crawler.py`: Tests for the crawler module
   - `test_chunker.py`: Tests for the chunker module
   - `test_embedder.py`: Tests for the embedder module
-  - `test_indexer.py`: Tests for the indexer module
   - `test_database.py`: Tests for the database module
-  - `test_processor.py`: Tests for the processor module
+- 📁 `tests/common/`: Tests for common modules
+  - `test_indexer.py`: Tests for the vector indexing functionality
+  - `test_processor.py`: Tests for the document processing pipeline
+- 📁 `tests/services/`: Tests for service layer
+  - `test_admin_service.py`: Tests for admin service
+  - `test_document_service.py`: Tests for document service
+  - `test_job_service.py`: Tests for job service
+- 📁 `tests/api/`: Tests for API endpoints
+  - `test_documents_api.py`: Tests for document endpoints
 
 ## 🧹 Code Quality
 
