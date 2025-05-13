@@ -439,7 +439,7 @@ wheels = [
 
 [[package]]
 name = "doctor"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "crawl4ai" },
@@ -475,11 +475,11 @@ requires-dist = [
     { name = "crawl4ai", specifier = "==0.6.0" },
     { name = "duckdb" },
     { name = "fastapi" },
-    { name = "fastapi-mcp", specifier = ">=0.3.3" },
+    { name = "fastapi-mcp", specifier = "==0.3.2" },
     { name = "httpx" },
     { name = "langchain-text-splitters" },
     { name = "litellm" },
-    { name = "mcp", specifier = ">=1.7.1" },
+    { name = "mcp", specifier = "==1.7.1" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
     { name = "openai" },
     { name = "pydantic", specifier = ">=2.0.0" },
@@ -557,7 +557,7 @@ wheels = [
 
 [[package]]
 name = "fastapi-mcp"
-version = "0.3.3"
+version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
@@ -571,9 +571,9 @@ dependencies = [
     { name = "typer" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/31/995f7f3ad9908d876f731015f8782074f046ae2159a0a8e16e8accbe0f64/fastapi_mcp-0.3.3.tar.gz", hash = "sha256:29da90e10ae4f661d6bd071fd1233553ef6be7fe3b9efe47d20611aa6cd42da2", size = 105039 }
+sdist = { url = "https://files.pythonhosted.org/packages/18/ab/a6e7522c185c0ddc1b1461ac447906eaf73d446e3b4ef02fa9e7c6ba23e1/fastapi_mcp-0.3.2.tar.gz", hash = "sha256:d9d7c9981ac0616478389c2d1dc5cd0780059611a7abfaf18864312585d39f61", size = 103313 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c2/ce/b390b58b6025c40270a13f86a9ea48446d75bff529eb699017014e49ac09/fastapi_mcp-0.3.3-py3-none-any.whl", hash = "sha256:246570660c318692b863522a6d9d2458f4c4cf6cebbfbe778fecbd49de13112a", size = 23182 },
+    { url = "https://files.pythonhosted.org/packages/cb/6c/aadb924070d826674c219033d03ac2bca3bcab1dc039c4c049e4cf9eb2c0/fastapi_mcp-0.3.2-py3-none-any.whl", hash = "sha256:750d59398063c6e5dab94f7a37b70bf20943f8846ce81cac73112a5dc9a0d67d", size = 23172 },
 ]
 
 [[package]]

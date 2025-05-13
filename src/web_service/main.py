@@ -18,27 +18,9 @@ from src.common.db_setup import (
 )
 from src.common.logger import get_logger
 from src.web_service.api import api_router
-from mcp.server.session import ServerSession
 
 # Get logger for this module
 logger = get_logger(__name__)
-
-# Temporary monkeypatch which avoids crashing when a POST message is received
-# before a connection has been initialized, e.g: after a deployment.
-# pylint: disable-next=protected-access
-# https://github.com/modelcontextprotocol/python-sdk/issues/423
-old__received_request = ServerSession._received_request
-
-
-async def _received_request(self, *args, **kwargs):
-    """Monkeypatch to handle RuntimeError during request reception."""
-    try:
-        return await old__received_request(self, *args, **kwargs)
-    except RuntimeError:
-        pass
-
-
-ServerSession._received_request = _received_request
 
 
 @asynccontextmanager
