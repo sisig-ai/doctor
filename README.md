@@ -1,6 +1,7 @@
 # 🩺 Doctor
 [![Python Tests](https://github.com/sisig-ai/doctor/actions/workflows/pytest.yml/badge.svg)](https://github.com/sisig-ai/doctor/actions/workflows/pytest.yml)
 [![codecov](https://codecov.io/gh/sisig-ai/doctor/branch/main/graph/badge.svg)](https://codecov.io/gh/sisig-ai/doctor)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Doctor is a system that lets LLM agents discover, crawl, and index web sites for better and more up-to-date reasoning and code generation. 🕸️🔍🧠
 
@@ -163,3 +164,7 @@ Or on staged files only:
 # Run on staged files
 pre-commit run
 ```
+
+## 📜 License
+
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
