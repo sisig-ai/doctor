@@ -72,7 +72,7 @@ def create_application() -> FastAPI:
     app = FastAPI(
         title="Doctor API",
         description="API for the Doctor web crawling and indexing system",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
 

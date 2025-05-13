@@ -1,6 +1,6 @@
 [project]
 name = "doctor"
-version = "0.1.0"
+version = "0.2.0"
 description = "LLM agent system for discovering, crawling, and indexing web sites"
 readme = "README.md"
 requires-python = ">=3.12"
