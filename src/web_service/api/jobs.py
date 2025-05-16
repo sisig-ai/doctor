@@ -12,9 +12,7 @@ from src.common.models import (
     JobProgressResponse,
 )
 from src.common.logger import get_logger
-from src.common.db_setup import (
-    get_duckdb_connection_with_retry,
-)
+from src.lib.database import Database
 from src.web_service.services.job_service import (
     fetch_url,
     get_job_progress,
@@ -86,7 +84,8 @@ async def job_progress_endpoint(
 
         try:
             # Get a fresh read-only connection each time
-            conn = await get_duckdb_connection_with_retry()
+            db = Database(read_only=True)
+            conn = await db.connect_with_retry()
             logger.info(f"Established fresh read-only connection to database (attempt {attempts})")
 
             # Call the service function

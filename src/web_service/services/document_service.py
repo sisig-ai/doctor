@@ -3,9 +3,7 @@
 from typing import List, Optional
 import duckdb
 
-from src.common.db_setup import (
-    deserialize_tags,
-)
+from src.lib.database import Database
 from src.common.models import (
     DocPageSummary,
     GetDocPageResponse,
@@ -263,7 +261,7 @@ async def list_doc_pages(
             DocPageSummary(
                 page_id=id,
                 domain=domain,
-                tags=deserialize_tags(tags_json),
+                tags=Database.deserialize_tags(tags_json),
                 crawl_date=crawl_date,
                 url=url,
             )
@@ -371,7 +369,7 @@ async def list_tags(
         # Process each JSON array and extract individual tags
         for row in result:
             tags_json = row[0]
-            tags = deserialize_tags(tags_json)
+            tags = Database.deserialize_tags(tags_json)
             for tag in tags:
                 if tag:  # Ensure we don't add empty tags
                     unique_tags.add(tag)

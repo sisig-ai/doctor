@@ -9,9 +9,8 @@ from src.lib.crawler import extract_page_text
 from src.lib.chunker import TextChunker
 from src.lib.embedder import generate_embedding
 from src.common.indexer import VectorIndexer
-from src.lib.database import store_page, update_job_status
 from src.common.logger import get_logger
-from src.common.db_setup import get_duckdb_connection
+from src.lib.database import Database
 
 # Configure logging
 logger = get_logger(__name__)
@@ -45,18 +44,23 @@ async def process_crawl_result(
         page_text = extract_page_text(page_result)
 
         # Store the page in the database
-        page_id = await store_page(
-            url=page_result.url,
-            text=page_text,
-            job_id=job_id,
-            tags=tags,
-        )
+        db = Database()
+        try:
+            page_id = await db.store_page(
+                url=page_result.url,
+                text=page_text,
+                job_id=job_id,
+                tags=tags,
+            )
+        finally:
+            db.close()
 
         # Initialize components
         chunker = TextChunker()
 
         # Get a DuckDB connection for the vector indexer
-        duckdb_conn = get_duckdb_connection()
+        db = Database()
+        duckdb_conn = db.connect()
         indexer = VectorIndexer(connection=duckdb_conn)
 
         # Split text into chunks
@@ -160,12 +164,13 @@ async def process_page_batch(
                 processed_page_ids.append(page_id)
 
                 # Update job progress
-                update_job_status(
-                    job_id=job_id,
-                    status="running",
-                    pages_discovered=len(page_results),
-                    pages_crawled=len(processed_page_ids),
-                )
+                with Database() as db:
+                    db.update_job_status(
+                        job_id=job_id,
+                        status="running",
+                        pages_discovered=len(page_results),
+                        pages_crawled=len(processed_page_ids),
+                    )
 
             except Exception as page_error:
                 logger.error(f"Error in batch processing for {page_result.url}: {str(page_error)}")

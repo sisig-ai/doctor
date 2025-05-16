@@ -10,9 +10,7 @@ from src.common.models import (
     ListTagsResponse,
 )
 from src.common.logger import get_logger
-from src.common.db_setup import (
-    get_duckdb_connection_with_retry,
-)
+from src.lib.database import Database
 from src.web_service.services.document_service import (
     search_docs,
     list_doc_pages,
@@ -54,7 +52,8 @@ async def search_docs_endpoint(
 
     try:
         # Get a fresh DuckDB connection
-        conn = await get_duckdb_connection_with_retry()
+        db = Database(read_only=True)
+        conn = await db.connect_with_retry()
         try:
             # Call the service function
             response = await search_docs(conn, query, tags, max_results, return_full_document_text)
@@ -64,7 +63,7 @@ async def search_docs_endpoint(
             raise HTTPException(status_code=500, detail=f"Database error: {str(db_error)}")
         finally:
             # Close DuckDB connection
-            conn.close()
+            db.close()
     except Exception as e:
         logger.error(f"Error searching documents: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
@@ -88,7 +87,8 @@ async def list_doc_pages_endpoint(
     logger.info(f"API: Listing document pages (page={page}, tags={tags})")
 
     # Get a fresh connection for each request
-    conn = await get_duckdb_connection_with_retry()
+    db = Database(read_only=True)
+    conn = await db.connect_with_retry()
 
     try:
         # Call the service function
@@ -98,7 +98,7 @@ async def list_doc_pages_endpoint(
         logger.error(f"Error listing document pages: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        conn.close()
+        db.close()
 
 
 @router.get("/get_doc_page", response_model=GetDocPageResponse, operation_id="get_doc_page")
@@ -123,7 +123,8 @@ async def get_doc_page_endpoint(
     logger.info(f"API: Retrieving document page {page_id} (lines {starting_line}-{ending_line})")
 
     # Get a fresh connection for each request
-    conn = await get_duckdb_connection_with_retry()
+    db = Database(read_only=True)
+    conn = await db.connect_with_retry()
 
     try:
         # Call the service function
@@ -138,7 +139,7 @@ async def get_doc_page_endpoint(
         logger.error(f"Error retrieving document page {page_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        conn.close()
+        db.close()
 
 
 @router.get("/list_tags", response_model=ListTagsResponse, operation_id="list_tags")
@@ -161,7 +162,8 @@ async def list_tags_endpoint(
     )
 
     # Get a fresh connection for each request
-    conn = await get_duckdb_connection_with_retry()
+    db = Database(read_only=True)
+    conn = await db.connect_with_retry()
 
     try:
         # Call the service function
@@ -171,4 +173,4 @@ async def list_tags_endpoint(
         logger.error(f"Error listing document tags: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        conn.close()
+        db.close()

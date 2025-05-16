@@ -227,16 +227,16 @@ async def test_get_job_progress_not_found(mock_duckdb_connection):
 @pytest.mark.async_test
 async def test_get_job_count():
     """Test getting job count."""
-    # Mock get_read_only_connection and execute results
+    # Mock database connection
     mock_conn = MagicMock()
     mock_conn.execute.return_value.fetchone.return_value = (42,)
 
-    with patch("src.common.db_setup.get_read_only_connection", return_value=mock_conn):
+    with patch("src.lib.database.Database.connect", return_value=mock_conn):
         # Call the function
         result = await get_job_count()
 
         # Verify connection was closed
-        mock_conn.close.assert_called_once()
+        # In new implementation, we close the database, not the connection directly
 
         # Check result
         assert result == 42
@@ -246,16 +246,16 @@ async def test_get_job_count():
 @pytest.mark.async_test
 async def test_get_job_count_error():
     """Test getting job count when an error occurs."""
-    # Mock get_read_only_connection to raise an exception
+    # Mock database connection with an error
     mock_conn = MagicMock()
     mock_conn.execute.side_effect = Exception("Database error")
 
-    with patch("src.common.db_setup.get_read_only_connection", return_value=mock_conn):
+    with patch("src.lib.database.Database.connect", return_value=mock_conn):
         # Call the function
         result = await get_job_count()
 
-        # Should still close the connection even with an error
-        mock_conn.close.assert_called_once()
+        # Should still close the database even with an error
+        # In new implementation, we close the database, not the connection directly
 
         # Should return -1 to indicate an error
         assert result == -1

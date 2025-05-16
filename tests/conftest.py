@@ -114,17 +114,19 @@ def in_memory_duckdb_connection():
             # Use the connection for testing
             ...
     """
-    from src.common.db_setup import ensure_duckdb_tables, ensure_duckdb_vss_extension
+    from src.lib.database import Database
 
     # Create in-memory connection
     conn = duckdb.connect(":memory:")
 
     try:
-        # Use the same table creation functions as the main application
-        ensure_duckdb_tables(conn)
+        # Use the Database class to set up the connection
+        db = Database()
+        db.conn = conn
 
-        # Set up VSS extension
-        ensure_duckdb_vss_extension(conn)
+        # Create tables and set up VSS extension
+        db.ensure_tables()
+        db.ensure_vss_extension()
 
         yield conn
     finally:
@@ -139,7 +141,7 @@ def ensure_duckdb_database():
     This fixture runs once per test session and initializes the database
     if it doesn't exist yet, which is especially important for CI environments.
     """
-    from src.common.db_setup import init_databases
+    from src.lib.database import Database
     from src.common.config import DUCKDB_PATH
     import os
 
@@ -147,7 +149,9 @@ def ensure_duckdb_database():
     if not os.path.exists(DUCKDB_PATH):
         print(f"Database file {DUCKDB_PATH} does not exist. Creating it for tests...")
         try:
-            init_databases(read_only=False)
+            db = Database(read_only=False)
+            db.initialize()
+            db.close()
             print(f"Successfully created database at {DUCKDB_PATH}")
         except Exception as e:
             print(f"Warning: Failed to create database: {e}")

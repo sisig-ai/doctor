@@ -26,7 +26,7 @@ def mock_duckdb_connection():
 def test_vector_indexer_initialization(mock_duckdb_connection):
     """Test VectorIndexer initialization."""
     # Test with default table name
-    with patch("src.common.indexer.get_duckdb_connection", return_value=mock_duckdb_connection):
+    with patch("src.lib.database.Database.connect", return_value=mock_duckdb_connection):
         indexer = VectorIndexer()
 
         # Check that the connection was retrieved
@@ -36,7 +36,7 @@ def test_vector_indexer_initialization(mock_duckdb_connection):
         mock_duckdb_connection.execute.assert_called_with("LOAD vss;")
 
     # Test with custom table name
-    with patch("src.common.indexer.get_duckdb_connection", return_value=mock_duckdb_connection):
+    with patch("src.lib.database.Database.connect", return_value=mock_duckdb_connection):
         mock_duckdb_connection.execute.reset_mock()
         indexer = VectorIndexer(table_name="custom_table")
 
@@ -63,7 +63,7 @@ async def test_index_vector(mock_duckdb_connection):
     sample_embedding = [0.1] * VECTOR_SIZE
 
     with (
-        patch("src.common.indexer.get_duckdb_connection", return_value=mock_duckdb_connection),
+        patch("src.lib.database.Database.connect", return_value=mock_duckdb_connection),
         patch(
             "src.common.indexer.uuid.uuid4",
             return_value=uuid.UUID("12345678-1234-5678-1234-567812345678"),
@@ -153,7 +153,7 @@ async def test_index_vector_error_handling(mock_duckdb_connection):
     """Test error handling when indexing a vector."""
     sample_embedding = [0.1] * VECTOR_SIZE
 
-    with patch("src.common.indexer.get_duckdb_connection", return_value=mock_duckdb_connection):
+    with patch("src.lib.database.Database.connect", return_value=mock_duckdb_connection):
         # First load VSS in init, then handle table check, then simulate error on INSERT
         mock_duckdb_connection.execute.side_effect = [
             None,  # LOAD vss in __init__
@@ -175,7 +175,7 @@ async def test_index_batch(mock_duckdb_connection):
     sample_embedding = [0.1] * VECTOR_SIZE
 
     with (
-        patch("src.common.indexer.get_duckdb_connection", return_value=mock_duckdb_connection),
+        patch("src.lib.database.Database.connect", return_value=mock_duckdb_connection),
         patch(
             "src.common.indexer.uuid.uuid4",
             side_effect=[
@@ -400,7 +400,7 @@ async def test_search(mock_duckdb_connection):
         ),
     ]
 
-    with patch("src.common.indexer.get_duckdb_connection", return_value=mock_duckdb_connection):
+    with patch("src.lib.database.Database.connect", return_value=mock_duckdb_connection):
         # Set up mock response for search query
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = mock_search_results
@@ -468,7 +468,7 @@ async def test_search_error_handling(mock_duckdb_connection):
     """Test error handling when searching for vectors."""
     query_vector = [0.1] * VECTOR_SIZE
 
-    with patch("src.common.indexer.get_duckdb_connection", return_value=mock_duckdb_connection):
+    with patch("src.lib.database.Database.connect", return_value=mock_duckdb_connection):
         # First handle the LOAD vss; call, then handle table check, then simulate an error on search
         mock_duckdb_connection.execute.side_effect = [
             None,  # LOAD vss in __init__

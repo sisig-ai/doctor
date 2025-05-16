@@ -150,11 +150,12 @@ async def get_job_count() -> int:
     Returns:
         int: Total number of jobs
     """
-    from src.common.db_setup import get_read_only_connection
+    from src.lib.database import Database
 
-    conn = None
+    db = None
     try:
-        conn = get_read_only_connection()
+        db = Database(read_only=True)
+        conn = db.connect()
         job_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
         logger.info(f"Database contains {job_count} total jobs.")
         return job_count
@@ -162,5 +163,5 @@ async def get_job_count() -> int:
         logger.warning(f"Failed to count jobs in database: {str(count_error)}")
         return -1
     finally:
-        if conn:
-            conn.close()
+        if db:
+            db.close()

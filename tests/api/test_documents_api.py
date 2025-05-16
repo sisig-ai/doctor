@@ -56,7 +56,7 @@ def test_search_docs_endpoint(test_client, mock_duckdb_connection):
     with (
         patch("src.web_service.api.documents.search_docs", return_value=mock_results),
         patch(
-            "src.web_service.api.documents.get_duckdb_connection_with_retry",
+            "src.web_service.api.documents.Database.connect_with_retry",
             return_value=mock_duckdb_connection,
         ),
     ):
@@ -87,7 +87,7 @@ def test_search_docs_endpoint_error(test_client, mock_duckdb_connection):
     with (
         patch("src.web_service.api.documents.search_docs", side_effect=Exception("Database error")),
         patch(
-            "src.web_service.api.documents.get_duckdb_connection_with_retry",
+            "src.web_service.api.documents.Database.connect_with_retry",
             return_value=mock_duckdb_connection,
         ),
     ):
@@ -134,7 +134,7 @@ def test_list_doc_pages_endpoint(test_client, mock_duckdb_connection):
     with (
         patch("src.web_service.api.documents.list_doc_pages", return_value=mock_response),
         patch(
-            "src.web_service.api.documents.get_duckdb_connection_with_retry",
+            "src.web_service.api.documents.Database.connect_with_retry",
             return_value=mock_duckdb_connection,
         ),
     ):
@@ -165,7 +165,7 @@ def test_get_doc_page_endpoint(test_client, mock_duckdb_connection):
     with (
         patch("src.web_service.api.documents.get_doc_page", return_value=mock_response),
         patch(
-            "src.web_service.api.documents.get_duckdb_connection_with_retry",
+            "src.web_service.api.documents.Database.connect_with_retry",
             return_value=mock_duckdb_connection,
         ),
     ):
@@ -191,7 +191,7 @@ def test_get_doc_page_endpoint_not_found(test_client, mock_duckdb_connection):
     with (
         patch("src.web_service.api.documents.get_doc_page", return_value=None),
         patch(
-            "src.web_service.api.documents.get_duckdb_connection_with_retry",
+            "src.web_service.api.documents.Database.connect_with_retry",
             return_value=mock_duckdb_connection,
         ),
     ):
@@ -216,7 +216,7 @@ def test_list_tags_endpoint(test_client, mock_duckdb_connection):
     with (
         patch("src.web_service.api.documents.list_tags", return_value=mock_response),
         patch(
-            "src.web_service.api.documents.get_duckdb_connection_with_retry",
+            "src.web_service.api.documents.Database.connect_with_retry",
             return_value=mock_duckdb_connection,
         ),
     ):

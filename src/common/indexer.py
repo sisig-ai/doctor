@@ -5,7 +5,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 
 import duckdb
-from src.common.db_setup import get_duckdb_connection
+from src.lib.database import Database
 from src.common.config import DUCKDB_EMBEDDINGS_TABLE, VECTOR_SIZE
 
 # Configure logging
@@ -25,7 +25,11 @@ class VectorIndexer:
             connection: Optional DuckDB connection to use (creates a new one if not provided)
         """
         self._own_connection = connection is None
-        self.conn = connection if connection is not None else get_duckdb_connection()
+        if connection is not None:
+            self.conn = connection
+        else:
+            db = Database()
+            self.conn = db.connect()
 
         # Ensure VSS extension is installed and loaded
         try:

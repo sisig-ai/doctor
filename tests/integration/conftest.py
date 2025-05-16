@@ -15,17 +15,21 @@ def in_memory_duckdb_connection():
     - HNSW index created
     - pages table created (for document service tests)
     """
-    from src.common.db_setup import ensure_duckdb_tables, ensure_duckdb_vss_extension
+    from src.lib.database import Database
 
     conn = duckdb.connect(":memory:")
 
     # Use the same setup functions as the main application
     try:
+        # Create a Database instance and initialize with our in-memory connection
+        db = Database()
+        db.conn = conn
+
         # Create base tables first
-        ensure_duckdb_tables(conn)
+        db.ensure_tables()
 
         # Set up VSS extension and embeddings tables
-        ensure_duckdb_vss_extension(conn)
+        db.ensure_vss_extension()
 
         yield conn
     finally:

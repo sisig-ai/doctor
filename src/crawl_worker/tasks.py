@@ -8,13 +8,9 @@ import redis
 from rq import Queue
 
 from src.common.config import REDIS_URI
-from src.common.db_setup import (
-    get_duckdb_connection,
-    serialize_tags,
-)
+from src.lib.database import Database
 from src.lib.crawler import crawl_url
 from src.common.processor import process_page_batch
-from src.lib.database import update_job_status
 from src.common.logger import get_logger
 
 # Get logger for this module
@@ -42,13 +38,15 @@ def create_job(
     logger.info(f"Creating new job {job_id} for URL: {url}, max pages: {max_pages}")
 
     # Create job record in DuckDB
-    conn = get_duckdb_connection()
+    db = Database()
     now = datetime.datetime.now()
 
     try:
         # Insert into DuckDB
         logger.info(f"Inserting job {job_id} into DuckDB")
-        conn.execute(
+        db.connect()
+        db.begin_transaction()
+        db.conn.execute(
             """
             INSERT INTO jobs (
                 job_id, start_url, status, pages_discovered, pages_crawled,
@@ -63,19 +61,21 @@ def create_job(
                 0,
                 0,
                 max_pages,
-                serialize_tags(tags),
+                Database.serialize_tags(tags),
                 now,
                 now,
             ),
         )
         # Ensure the changes are written to disk
-        conn.commit()
+        db.commit()
 
         # Force a checkpoint to ensure changes are persisted
-        conn.execute("CHECKPOINT")
+        db.checkpoint()
 
         # Verify the job was created by reading it back
-        job_record = conn.execute("SELECT job_id FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        job_record = db.conn.execute(
+            "SELECT job_id FROM jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
         if not job_record:
             logger.error(f"Job {job_id} was not successfully created in the database!")
             raise Exception(f"Failed to create job {job_id} in the database")
@@ -97,7 +97,7 @@ def create_job(
         logger.exception(f"Error creating job for URL {url}: {str(e)}")
         raise
     finally:
-        conn.close()
+        db.close()
 
 
 def perform_crawl(
@@ -121,14 +121,16 @@ def perform_crawl(
     logger.info(f"Starting crawl job {job_id} for URL: {url}, max pages: {max_pages}")
 
     # Update job status to running
-    update_job_status(job_id, "running")
+    with Database() as db:
+        db.update_job_status(job_id, "running")
 
     try:
         # Run the crawl and processing pipeline
         result = asyncio.run(_execute_pipeline(job_id, url, tags, max_pages))
 
         # Update job status to completed
-        update_job_status(job_id, "completed")
+        with Database() as db:
+            db.update_job_status(job_id, "completed")
 
         logger.info(f"Completed crawl job {job_id}: {result}")
         return result
@@ -137,7 +139,8 @@ def perform_crawl(
         logger.exception(f"Error in crawl job {job_id}: {str(e)}")
 
         # Update job status to failed
-        update_job_status(job_id, "failed", error_message=str(e))
+        with Database() as db:
+            db.update_job_status(job_id, "failed", error_message=str(e))
 
         return {"job_id": job_id, "status": "failed", "error": str(e)}
 
@@ -160,12 +163,13 @@ async def _execute_pipeline(
     logger.info(f"Job {job_id}: Starting pipeline for URL: {url} with max_pages={max_pages}")
 
     # Update job status to indicate crawling has started
-    update_job_status(
-        job_id=job_id,
-        status="running",
-        pages_discovered=0,
-        pages_crawled=0,
-    )
+    with Database() as db:
+        db.update_job_status(
+            job_id=job_id,
+            status="running",
+            pages_discovered=0,
+            pages_crawled=0,
+        )
 
     # Step 1: Crawl the URL
     logger.info(f"Job {job_id}: Beginning crawling phase from URL: {url}")
@@ -175,12 +179,13 @@ async def _execute_pipeline(
     logger.info(f"Job {job_id}: Crawl discovered {pages_discovered} pages")
 
     # Update job progress after crawl phase
-    update_job_status(
-        job_id=job_id,
-        status="running",
-        pages_discovered=pages_discovered,
-        pages_crawled=0,
-    )
+    with Database() as db:
+        db.update_job_status(
+            job_id=job_id,
+            status="running",
+            pages_discovered=pages_discovered,
+            pages_crawled=0,
+        )
 
     # Step 2: Process the crawled pages
     if crawl_results:
@@ -199,24 +204,26 @@ async def _execute_pipeline(
         )
 
         # Final update before completing
-        update_job_status(
-            job_id=job_id,
-            status="running",
-            pages_discovered=pages_discovered,
-            pages_crawled=pages_crawled,
-        )
+        with Database() as db:
+            db.update_job_status(
+                job_id=job_id,
+                status="running",
+                pages_discovered=pages_discovered,
+                pages_crawled=pages_crawled,
+            )
     else:
         logger.warning(f"Job {job_id}: No pages were discovered during crawl")
         pages_crawled = 0
 
         # Update status for empty crawl
-        update_job_status(
-            job_id=job_id,
-            status="running",
-            pages_discovered=0,
-            pages_crawled=0,
-            error_message="No pages were discovered during crawl",
-        )
+        with Database() as db:
+            db.update_job_status(
+                job_id=job_id,
+                status="running",
+                pages_discovered=0,
+                pages_crawled=0,
+                error_message="No pages were discovered during crawl",
+            )
 
     # Return final status
     logger.info(
@@ -252,8 +259,10 @@ def delete_docs(
         f"Starting delete task {task_id} with filters: tags={tags}, domain={domain}, page_ids={page_ids}"
     )
 
-    # Get a connection with write access
-    conn = get_duckdb_connection(read_only=False)
+    # Get a database instance with write access
+    db = Database(read_only=False)
+    db.connect()
+    db.begin_transaction()
 
     try:
         # Build the SQL where clause based on filters
@@ -283,17 +292,17 @@ def delete_docs(
         # Get the IDs of pages that will be deleted
         query = f"SELECT id FROM pages WHERE {where_clause}"
         logger.debug(f"Executing query to get page IDs: {query}")
-        results = conn.execute(query, params).fetchall()
+        results = db.conn.execute(query, params).fetchall()
         page_ids_to_delete = [row[0] for row in results]
 
         # Then delete from SQL database
         delete_query = f"DELETE FROM pages WHERE {where_clause}"
         logger.debug(f"Executing delete query: {delete_query}")
-        cursor = conn.execute(delete_query, params)
+        cursor = db.conn.execute(delete_query, params)
         deleted_pages = cursor.rowcount
 
         # Commit the changes
-        conn.commit()
+        db.commit()
 
         logger.info(f"Deleted {deleted_pages} pages ")
 
@@ -306,4 +315,4 @@ def delete_docs(
         logger.error(f"Error deleting documents: {str(e)}")
         raise
     finally:
-        conn.close()
+        db.close()
