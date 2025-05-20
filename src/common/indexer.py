@@ -2,11 +2,12 @@
 
 import logging
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import Any
 
 import duckdb
-from src.lib.database import Database
+
 from src.common.config import DUCKDB_EMBEDDINGS_TABLE, VECTOR_SIZE
+from src.lib.database import Database
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -16,13 +17,16 @@ class VectorIndexer:
     """Class for indexing vectors and payloads in DuckDB."""
 
     def __init__(
-        self, table_name: str = None, connection: Optional[duckdb.DuckDBPyConnection] = None
+        self,
+        table_name: str = None,
+        connection: duckdb.DuckDBPyConnection | None = None,
     ):
         """Initialize the vector indexer.
 
         Args:
             table_name: Name of the DuckDB table to use (defaults to config value)
             connection: Optional DuckDB connection to use (creates a new one if not provided)
+
         """
         self._own_connection = connection is None
         if connection is not None:
@@ -37,7 +41,7 @@ class VectorIndexer:
             logger.debug("VSS extension installed")
         except Exception as e:
             # If extension is already installed, this will fail, but that's okay
-            logger.debug(f"VSS extension installation attempt: {str(e)}")
+            logger.debug(f"VSS extension installation attempt: {e!s}")
 
         self.conn.execute("LOAD vss;")
         logger.debug("VSS extension loaded")
@@ -55,7 +59,10 @@ class VectorIndexer:
                 pass
 
     async def index_vector(
-        self, vector: List[float], payload: Dict[str, Any], point_id: Optional[str] = None
+        self,
+        vector: list[float],
+        payload: dict[str, Any],
+        point_id: str | None = None,
     ) -> str:
         """Index a single vector with its payload in DuckDB.
 
@@ -66,6 +73,7 @@ class VectorIndexer:
 
         Returns:
             The ID of the indexed point
+
         """
         if not vector:
             logger.error("Cannot index empty vector")
@@ -85,18 +93,18 @@ class VectorIndexer:
             # First check if the table exists
             try:
                 table_exists = self.conn.execute(
-                    f"SELECT count(*) FROM information_schema.tables WHERE table_name = '{self.table_name}'"
+                    f"SELECT count(*) FROM information_schema.tables WHERE table_name = '{self.table_name}'",
                 ).fetchone()[0]
 
                 if not table_exists:
                     logger.error(
-                        f"Table '{self.table_name}' does not exist. Ensure database setup is complete."
+                        f"Table '{self.table_name}' does not exist. Ensure database setup is complete.",
                     )
                     raise Exception(
-                        f"Table '{self.table_name}' does not exist. Run database initialization first."
+                        f"Table '{self.table_name}' does not exist. Run database initialization first.",
                     )
             except Exception as check_err:
-                logger.error(f"Error checking if table exists: {str(check_err)}")
+                logger.error(f"Error checking if table exists: {check_err!s}")
                 raise
 
             # Extract payload fields
@@ -121,15 +129,15 @@ class VectorIndexer:
             return point_id
 
         except Exception as e:
-            logger.error(f"Error indexing vector: {str(e)}")
+            logger.error(f"Error indexing vector: {e!s}")
             raise
 
     async def index_batch(
         self,
-        vectors: List[List[float]],
-        payloads: List[Dict[str, Any]],
-        point_ids: Optional[List[str]] = None,
-    ) -> List[str]:
+        vectors: list[list[float]],
+        payloads: list[dict[str, Any]],
+        point_ids: list[str] | None = None,
+    ) -> list[str]:
         """Index a batch of vectors with their payloads in DuckDB.
 
         Args:
@@ -139,6 +147,7 @@ class VectorIndexer:
 
         Returns:
             List of IDs of the indexed points
+
         """
         if not vectors or not payloads:
             logger.error("Cannot index empty batch")
@@ -160,10 +169,12 @@ class VectorIndexer:
         try:
             # Prepare batch data for insertion
             batch_data = []
-            for i, (point_id, vector, payload) in enumerate(zip(point_ids, vectors, payloads)):
+            for i, (point_id, vector, payload) in enumerate(
+                zip(point_ids, vectors, payloads, strict=False)
+            ):
                 if len(vector) != VECTOR_SIZE:
                     logger.error(
-                        f"Vector {i} dimension mismatch: expected {VECTOR_SIZE}, got {len(vector)}"
+                        f"Vector {i} dimension mismatch: expected {VECTOR_SIZE}, got {len(vector)}",
                     )
                     raise ValueError(f"Vector dimension must be {VECTOR_SIZE}")
 
@@ -175,7 +186,7 @@ class VectorIndexer:
                 job_id = payload.get("job_id", "")
 
                 batch_data.append(
-                    (point_id, vector, text_chunk, page_id, url, domain, tags, job_id)
+                    (point_id, vector, text_chunk, page_id, url, domain, tags, job_id),
                 )
 
             # Use executemany for efficient batch insertion
@@ -192,15 +203,15 @@ class VectorIndexer:
             return point_ids
 
         except Exception as e:
-            logger.error(f"Error indexing vector batch: {str(e)}")
+            logger.error(f"Error indexing vector batch: {e!s}")
             raise
 
     async def search(
         self,
-        query_vector: List[float],
+        query_vector: list[float],
         limit: int = 10,
-        filter_payload: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        filter_payload: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Search for similar vectors in DuckDB.
 
         Args:
@@ -210,6 +221,7 @@ class VectorIndexer:
 
         Returns:
             List of search results, each containing the point ID, score, and payload
+
         """
         logger.debug(f"Searching for similar vectors with limit={limit}")
 
@@ -224,7 +236,7 @@ class VectorIndexer:
                 domain,
                 tags,
                 job_id,
-                array_cosine_distance(embedding, ?::FLOAT4[{VECTOR_SIZE}]) AS cosine_distance
+                array_cosine_distance(embedding, ?::FLOAT[{VECTOR_SIZE}]) AS cosine_distance
             FROM {self.table_name}
             """
 
@@ -270,11 +282,11 @@ class VectorIndexer:
                             "tags": tags,
                             "job_id": job_id,
                         },
-                    }
+                    },
                 )
 
             return search_results
 
         except Exception as e:
-            logger.error(f"Error searching vectors: {str(e)}")
+            logger.error(f"Error searching vectors: {e!s}")
             raise

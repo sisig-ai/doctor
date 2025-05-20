@@ -1,9 +1,9 @@
 """Admin service for the web service."""
 
 import uuid
-from typing import List, Optional
 
 from rq import Queue
+
 from src.common.logger import get_logger
 
 # Get logger for this module
@@ -12,12 +12,11 @@ logger = get_logger(__name__)
 
 async def delete_docs(
     queue: Queue,
-    tags: Optional[List[str]] = None,
-    domain: Optional[str] = None,
-    page_ids: Optional[List[str]] = None,
+    tags: list[str] | None = None,
+    domain: str | None = None,
+    page_ids: list[str] | None = None,
 ) -> str:
-    """
-    Delete documents from the database based on filters.
+    """Delete documents from the database based on filters.
 
     Args:
         queue: Redis queue for job processing
@@ -27,9 +26,10 @@ async def delete_docs(
 
     Returns:
         str: The task ID for tracking
+
     """
     logger.info(
-        f"Enqueueing delete task with filters: tags={tags}, domain={domain}, page_ids={page_ids}"
+        f"Enqueueing delete task with filters: tags={tags}, domain={domain}, page_ids={page_ids}",
     )
 
     # Generate a task ID for tracking logs

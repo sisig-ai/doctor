@@ -1,6 +1,7 @@
 """Integration tests for the VectorIndexer class with real DuckDB."""
 
 import pytest
+
 from src.common.config import VECTOR_SIZE
 from src.common.indexer import VectorIndexer
 

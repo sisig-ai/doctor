@@ -1,7 +1,8 @@
 """Tests for the embedder module."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import patch, AsyncMock
 
 from src.lib.embedder import generate_embedding
 
@@ -20,18 +21,14 @@ async def test_generate_embedding(sample_text, mock_embedding_response):
         mock_aembedding.return_value = mock_embedding_response
 
         # Test with default model
-        with patch("src.lib.embedder.EMBEDDING_MODEL", "text-embedding-3-small"):
+        with patch("src.lib.embedder.DOC_EMBEDDING_MODEL", "text-embedding-3-small"):
             embedding = await generate_embedding(sample_text)
-
-            # Check that aembedding was called with the correct arguments
+            assert embedding == mock_embedding_response["data"][0]["embedding"]
             mock_aembedding.assert_called_once_with(
                 model="text-embedding-3-small",
                 input=[sample_text],
                 timeout=30,
             )
-
-            # Check that we got the expected embedding
-            assert embedding == [0.1, 0.2, 0.3, 0.4, 0.5]
 
         # Test with custom model and timeout
         mock_aembedding.reset_mock()

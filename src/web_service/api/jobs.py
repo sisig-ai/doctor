@@ -1,22 +1,23 @@
 """Job API routes for the web service."""
 
 import asyncio
+
+import redis
 from fastapi import APIRouter, Depends, HTTPException, Query
 from rq import Queue
-import redis
 
 from src.common.config import REDIS_URI
+from src.common.logger import get_logger
 from src.common.models import (
     FetchUrlRequest,
     FetchUrlResponse,
     JobProgressResponse,
 )
-from src.common.logger import get_logger
 from src.lib.database import Database
 from src.web_service.services.job_service import (
     fetch_url,
-    get_job_progress,
     get_job_count,
+    get_job_progress,
 )
 
 # Get logger for this module
@@ -31,14 +32,14 @@ async def fetch_url_endpoint(
     request: FetchUrlRequest,
     queue: Queue = Depends(lambda: Queue("worker", connection=redis.from_url(REDIS_URI))),
 ):
-    """
-    Initiate a fetch job to crawl a website.
+    """Initiate a fetch job to crawl a website.
 
     Args:
         request: The fetch URL request
 
     Returns:
         The job ID
+
     """
     logger.info(f"API: Initiating fetch for URL: {request.url}")
 
@@ -52,22 +53,22 @@ async def fetch_url_endpoint(
         )
         return response
     except Exception as e:
-        logger.error(f"Error initiating fetch: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error initiating fetch: {str(e)}")
+        logger.error(f"Error initiating fetch: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Error initiating fetch: {e!s}")
 
 
 @router.get("/job_progress", response_model=JobProgressResponse, operation_id="job_progress")
 async def job_progress_endpoint(
     job_id: str = Query(..., description="The job ID to check progress for"),
 ):
-    """
-    Check the progress of a job.
+    """Check the progress of a job.
 
     Args:
         job_id: The job ID to check progress for
 
     Returns:
         Job progress information
+
     """
     logger.info(f"API: BEGIN job_progress for job {job_id}")
 
@@ -94,7 +95,7 @@ async def job_progress_endpoint(
             if not result:
                 # Job not found on this attempt
                 logger.warning(
-                    f"Job {job_id} not found (attempt {attempts}/{max_attempts}). Retrying in {retry_delay}s..."
+                    f"Job {job_id} not found (attempt {attempts}/{max_attempts}). Retrying in {retry_delay}s...",
                 )
                 # Close connection before sleeping
                 if conn:
@@ -117,13 +118,13 @@ async def job_progress_endpoint(
         except HTTPException:
             # Re-raise HTTP exceptions as-is
             logger.warning(
-                f"HTTPException occurred during attempt {attempts} for job {job_id}, re-raising."
+                f"HTTPException occurred during attempt {attempts} for job {job_id}, re-raising.",
             )
             raise
         except Exception as e:
             # Log errors during attempts but don't necessarily stop retrying unless it's the last attempt
             logger.error(
-                f"Error checking job progress (attempt {attempts}) for job {job_id}: {str(e)}"
+                f"Error checking job progress (attempt {attempts}) for job {job_id}: {e!s}",
             )
             if attempts < max_attempts:
                 logger.info(f"Non-fatal error on attempt {attempts}, will retry after delay.")
@@ -134,24 +135,24 @@ async def job_progress_endpoint(
                         conn = None
                     except Exception as close_err:
                         logger.warning(
-                            f"Error closing connection during error handling: {close_err}"
+                            f"Error closing connection during error handling: {close_err}",
                         )
                 await asyncio.sleep(retry_delay)  # Wait before retry on error too
                 retry_delay *= 2
                 continue  # Continue to next attempt
-            else:
-                logger.error(f"Error on final attempt ({attempts}) for job {job_id}. Raising 500.")
-                # Clean up connection if open
-                if conn:
-                    try:
-                        conn.close()
-                    except Exception as close_err:
-                        logger.warning(
-                            f"Error closing connection during final error handling: {close_err}"
-                        )
-                raise HTTPException(
-                    status_code=500, detail=f"Database error after retries: {str(e)}"
-                )
+            logger.error(f"Error on final attempt ({attempts}) for job {job_id}. Raising 500.")
+            # Clean up connection if open
+            if conn:
+                try:
+                    conn.close()
+                except Exception as close_err:
+                    logger.warning(
+                        f"Error closing connection during final error handling: {close_err}",
+                    )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Database error after retries: {e!s}",
+            )
 
         finally:
             # Make sure to close the connection if it's still open *at the end of this attempt*

@@ -1,15 +1,15 @@
 """Job service for the web service."""
 
 import uuid
-from typing import Optional
-import duckdb
 
+import duckdb
+from rq import Queue
+
+from src.common.logger import get_logger
 from src.common.models import (
     FetchUrlResponse,
     JobProgressResponse,
 )
-from src.common.logger import get_logger
-from rq import Queue
 
 # Get logger for this module
 logger = get_logger(__name__)
@@ -18,11 +18,10 @@ logger = get_logger(__name__)
 async def fetch_url(
     queue: Queue,
     url: str,
-    tags: Optional[list[str]] = None,
+    tags: list[str] | None = None,
     max_pages: int = 100,
 ) -> FetchUrlResponse:
-    """
-    Initiate a fetch job to crawl a website.
+    """Initiate a fetch job to crawl a website.
 
     Args:
         queue: Redis queue for job processing
@@ -32,6 +31,7 @@ async def fetch_url(
 
     Returns:
         FetchUrlResponse: The job ID
+
     """
     # Generate a temporary job ID
     job_id = str(uuid.uuid4())
@@ -54,9 +54,8 @@ async def fetch_url(
 async def get_job_progress(
     conn: duckdb.DuckDBPyConnection,
     job_id: str,
-) -> Optional[JobProgressResponse]:
-    """
-    Check the progress of a job.
+) -> JobProgressResponse | None:
+    """Check the progress of a job.
 
     Args:
         conn: Connected DuckDB connection
@@ -64,6 +63,7 @@ async def get_job_progress(
 
     Returns:
         JobProgressResponse: Job progress information or None if job not found
+
     """
     logger.info(f"Checking progress for job {job_id}")
 
@@ -113,7 +113,7 @@ async def get_job_progress(
     ) = result
 
     logger.info(
-        f"Found job with ID: {job_id}, status: {status}, discovered: {pages_discovered}, crawled: {pages_crawled}, updated: {updated_at}"
+        f"Found job with ID: {job_id}, status: {status}, discovered: {pages_discovered}, crawled: {pages_crawled}, updated: {updated_at}",
     )
 
     # Determine if job is completed
@@ -125,7 +125,7 @@ async def get_job_progress(
         progress_percent = min(100, int((pages_crawled / min(pages_discovered, max_pages)) * 100))
 
     logger.info(
-        f"Job {job_id} progress: {pages_crawled}/{pages_discovered} pages, {progress_percent}% complete, status: {status}"
+        f"Job {job_id} progress: {pages_crawled}/{pages_discovered} pages, {progress_percent}% complete, status: {status}",
     )
 
     return JobProgressResponse(
@@ -143,12 +143,12 @@ async def get_job_progress(
 
 
 async def get_job_count() -> int:
-    """
-    Get the total number of jobs in the database.
+    """Get the total number of jobs in the database.
     Used for debugging purposes.
 
     Returns:
         int: Total number of jobs
+
     """
     from src.lib.database import Database
 
@@ -160,7 +160,7 @@ async def get_job_count() -> int:
         logger.info(f"Database contains {job_count} total jobs.")
         return job_count
     except Exception as count_error:
-        logger.warning(f"Failed to count jobs in database: {str(count_error)}")
+        logger.warning(f"Failed to count jobs in database: {count_error!s}")
         return -1
     finally:
         if db:

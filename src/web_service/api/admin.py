@@ -1,14 +1,14 @@
 """Admin API routes for the web service."""
 
+import redis
 from fastapi import APIRouter, Depends, status
 from rq import Queue
-import redis
 
 from src.common.config import REDIS_URI
+from src.common.logger import get_logger
 from src.common.models import (
     DeleteDocsRequest,
 )
-from src.common.logger import get_logger
 from src.web_service.services.admin_service import (
     delete_docs,
 )
@@ -33,9 +33,10 @@ async def delete_docs_endpoint(
 
     Returns:
         None: Returns a 204 No Content response upon successful enqueueing.
+
     """
     logger.info(
-        f"API: Deleting docs with filters: tags={request.tags}, domain={request.domain}, page_ids={request.page_ids}"
+        f"API: Deleting docs with filters: tags={request.tags}, domain={request.domain}, page_ids={request.page_ids}",
     )
 
     try:
@@ -48,9 +49,9 @@ async def delete_docs_endpoint(
         )
 
         # Return 204 No Content
-        return None
+        return
     except Exception as e:
-        logger.error(f"Error deleting documents: {str(e)}")
+        logger.error(f"Error deleting documents: {e!s}")
         # Since this is an asynchronous operation, we still return 204
         # The actual deletion happens in the background
-        return None
+        return

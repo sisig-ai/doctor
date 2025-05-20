@@ -1,7 +1,8 @@
 """Tests for the admin service."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from rq import Queue
 
 from src.web_service.services.admin_service import delete_docs

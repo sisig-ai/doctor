@@ -1,7 +1,7 @@
 """Fixtures for integration tests."""
 
-import pytest
 import duckdb
+import pytest
 
 
 @pytest.fixture
@@ -25,11 +25,8 @@ def in_memory_duckdb_connection():
         db = Database()
         db.conn = conn
 
-        # Create base tables first
-        db.ensure_tables()
-
-        # Set up VSS extension and embeddings tables
-        db.ensure_vss_extension()
+        # Initialize all tables and extensions
+        db.initialize()
 
         yield conn
     finally:

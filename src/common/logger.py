@@ -2,16 +2,14 @@
 
 import logging
 import os
-from typing import Optional
 
 
 def configure_logging(
     name: str = None,
     level: str = None,
-    log_file: Optional[str] = None,
+    log_file: str | None = None,
 ) -> logging.Logger:
-    """
-    Configure and return a logger with consistent formatting.
+    """Configure and return a logger with consistent formatting.
 
     Args:
         name: Logger name (typically __name__ from the calling module)
@@ -21,6 +19,7 @@ def configure_logging(
 
     Returns:
         Configured logger instance
+
     """
     # Get log level from params, env var, or default to INFO
     if level is None:
@@ -41,7 +40,7 @@ def configure_logging(
         if log_file:
             file_handler = logging.FileHandler(log_file)
             file_handler.setFormatter(
-                logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+                logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"),
             )
             logging.getLogger().addHandler(file_handler)
 
@@ -53,13 +52,13 @@ def configure_logging(
 
 
 def get_logger(name: str = None) -> logging.Logger:
-    """
-    Get a logger with the specified name.
+    """Get a logger with the specified name.
 
     Args:
         name: Logger name (typically __name__ from the calling module)
 
     Returns:
         Configured logger instance
+
     """
     return configure_logging(name)

@@ -1,9 +1,8 @@
 """Text chunking functionality using LangChain."""
 
-from typing import List
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from src.common.config import CHUNK_SIZE, CHUNK_OVERLAP
+
+from src.common.config import CHUNK_OVERLAP, CHUNK_SIZE
 from src.common.logger import get_logger
 
 # Configure logging
@@ -14,12 +13,12 @@ class TextChunker:
     """Class for splitting text into semantic chunks."""
 
     def __init__(self, chunk_size: int = None, chunk_overlap: int = None):
-        """
-        Initialize the text chunker.
+        """Initialize the text chunker.
 
         Args:
             chunk_size: Size of each text chunk (defaults to config value)
             chunk_overlap: Overlap between chunks (defaults to config value)
+
         """
         self.chunk_size = chunk_size or CHUNK_SIZE
         self.chunk_overlap = chunk_overlap or CHUNK_OVERLAP
@@ -31,18 +30,18 @@ class TextChunker:
         )
 
         logger.debug(
-            f"Initialized TextChunker with chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}"
+            f"Initialized TextChunker with chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}",
         )
 
-    def split_text(self, text: str) -> List[str]:
-        """
-        Split the text into chunks.
+    def split_text(self, text: str) -> list[str]:
+        """Split the text into chunks.
 
         Args:
             text: The text to split
 
         Returns:
             List of text chunks
+
         """
         if not text or not text.strip():
             logger.warning("Received empty text for chunking, returning empty list")

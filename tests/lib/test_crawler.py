@@ -1,7 +1,8 @@
 """Tests for the crawler module."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from src.lib.crawler import crawl_url, extract_page_text
 

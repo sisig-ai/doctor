@@ -1,19 +1,20 @@
 """Tests for the document API endpoints."""
 
-import pytest
-from unittest.mock import patch, MagicMock
-from fastapi.testclient import TestClient
-import duckdb
+from unittest.mock import MagicMock, patch
 
-from src.web_service.main import app
+import duckdb
+import pytest
+from fastapi.testclient import TestClient
+
 from src.common.models import (
-    SearchDocsResponse,
-    SearchResult,
-    ListDocPagesResponse,
     DocPageSummary,
     GetDocPageResponse,
+    ListDocPagesResponse,
     ListTagsResponse,
+    SearchDocsResponse,
+    SearchResult,
 )
+from src.web_service.main import app
 
 
 @pytest.fixture
@@ -49,7 +50,7 @@ def test_search_docs_endpoint(test_client, mock_duckdb_connection):
                 score=0.85,
                 url="https://example.com/ml",
             ),
-        ]
+        ],
     )
 
     # Mock the search_docs service function and DuckDB connection
@@ -235,7 +236,7 @@ def test_list_tags_endpoint(test_client, mock_duckdb_connection):
 
 @pytest.mark.unit
 @pytest.mark.api
-def test_document_api_integration(test_client):
+def test_document_api_integration(test_client, mock_duckdb_connection):
     """Test the integration of all document API endpoints.
 
     This test uses patching at a high level to simulate a complete API workflow.
@@ -250,8 +251,8 @@ def test_document_api_integration(test_client):
                 tags=["tag1", "tag2"],
                 score=0.95,
                 url="https://example.com/page1",
-            )
-        ]
+            ),
+        ],
     )
 
     doc_pages = ListDocPagesResponse(
@@ -262,7 +263,7 @@ def test_document_api_integration(test_client):
                 tags=["tag1", "tag2"],
                 crawl_date="2023-01-01T00:00:00",
                 url="https://example.com/page1",
-            )
+            ),
         ],
         total_pages=1,
         current_page=1,
@@ -282,6 +283,10 @@ def test_document_api_integration(test_client):
         patch("src.web_service.api.documents.list_doc_pages", return_value=doc_pages),
         patch("src.web_service.api.documents.get_doc_page", return_value=doc_page),
         patch("src.web_service.api.documents.list_tags", return_value=tags),
+        patch(
+            "src.web_service.api.documents.Database.connect_with_retry",
+            return_value=mock_duckdb_connection,
+        ),
     ):
         # Test search_docs endpoint
         response = test_client.get("/search_docs", params={"query": "test"})

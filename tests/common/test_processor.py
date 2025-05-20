@@ -1,7 +1,8 @@
 """Tests for the processor module."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
 
 from src.common.processor import process_crawl_result, process_page_batch
 
@@ -55,7 +56,10 @@ def mock_processor_dependencies():
 @pytest.mark.unit
 @pytest.mark.async_test
 async def test_process_crawl_result(
-    sample_crawl_result, job_id, sample_tags, mock_processor_dependencies
+    sample_crawl_result,
+    job_id,
+    sample_tags,
+    mock_processor_dependencies,
 ):
     """Test processing a single crawl result."""
     with (
@@ -64,7 +68,8 @@ async def test_process_crawl_result(
             mock_processor_dependencies["extract_page_text"],
         ),
         patch(
-            "src.common.processor.Database", return_value=mock_processor_dependencies["database"]
+            "src.common.processor.Database",
+            return_value=mock_processor_dependencies["database"],
         ),
         patch("src.common.processor.TextChunker", mock_processor_dependencies["TextChunker"]),
         patch(
@@ -74,11 +79,13 @@ async def test_process_crawl_result(
         patch("src.common.processor.VectorIndexer", mock_processor_dependencies["VectorIndexer"]),
     ):
         page_id = await process_crawl_result(
-            page_result=sample_crawl_result, job_id=job_id, tags=sample_tags
+            page_result=sample_crawl_result,
+            job_id=job_id,
+            tags=sample_tags,
         )
 
         mock_processor_dependencies["extract_page_text"].assert_called_once_with(
-            sample_crawl_result
+            sample_crawl_result,
         )
         mock_processor_dependencies["store_page"].assert_called_once_with(
             url=sample_crawl_result.url,
@@ -97,7 +104,10 @@ async def test_process_crawl_result(
 @pytest.mark.unit
 @pytest.mark.async_test
 async def test_process_crawl_result_with_errors(
-    sample_crawl_result, job_id, sample_tags, mock_processor_dependencies
+    sample_crawl_result,
+    job_id,
+    sample_tags,
+    mock_processor_dependencies,
 ):
     """Test processing a crawl result with errors during chunking/embedding."""
     with (
@@ -106,14 +116,17 @@ async def test_process_crawl_result_with_errors(
             mock_processor_dependencies["extract_page_text"],
         ),
         patch(
-            "src.common.processor.Database", return_value=mock_processor_dependencies["database"]
+            "src.common.processor.Database",
+            return_value=mock_processor_dependencies["database"],
         ),
         patch("src.common.processor.TextChunker", mock_processor_dependencies["TextChunker"]),
         patch("src.common.processor.generate_embedding", side_effect=Exception("Embedding error")),
         patch("src.common.processor.VectorIndexer", mock_processor_dependencies["VectorIndexer"]),
     ):
         page_id = await process_crawl_result(
-            page_result=sample_crawl_result, job_id=job_id, tags=sample_tags
+            page_result=sample_crawl_result,
+            job_id=job_id,
+            tags=sample_tags,
         )
         assert page_id == "test-page-123"
         mock_processor_dependencies["store_page"].assert_called_once()
@@ -135,7 +148,8 @@ async def test_process_page_batch(mock_processor_dependencies):
     with (
         patch("src.common.processor.process_crawl_result", mock_process_result),
         patch(
-            "src.common.processor.Database", return_value=mock_processor_dependencies["database"]
+            "src.common.processor.Database",
+            return_value=mock_processor_dependencies["database"],
         ),
     ):
         job_id = "test-job"
@@ -164,13 +178,14 @@ async def test_process_page_batch_with_errors(mock_processor_dependencies):
         MagicMock(url="https://example.com/page3"),
     ]
     mock_process_result = AsyncMock(
-        side_effect=["page-1", Exception("Error processing page 2"), "page-3"]
+        side_effect=["page-1", Exception("Error processing page 2"), "page-3"],
     )
 
     with (
         patch("src.common.processor.process_crawl_result", mock_process_result),
         patch(
-            "src.common.processor.Database", return_value=mock_processor_dependencies["database"]
+            "src.common.processor.Database",
+            return_value=mock_processor_dependencies["database"],
         ),
     ):
         job_id = "test-job"

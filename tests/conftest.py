@@ -1,10 +1,10 @@
 """Common fixtures for tests."""
 
-import pytest
 import asyncio
 import random
+
 import duckdb
-from typing import List
+import pytest
 
 from src.common.config import VECTOR_SIZE
 
@@ -46,7 +46,7 @@ def sample_embedding():
 
 
 @pytest.fixture
-def sample_embedding_full_size() -> List[float]:
+def sample_embedding_full_size() -> list[float]:
     """Sample embedding vector with the full VECTOR_SIZE dimension for DuckDB tests."""
     random.seed(42)  # For reproducibility
     return [random.random() for _ in range(VECTOR_SIZE)]
@@ -135,15 +135,15 @@ def in_memory_duckdb_connection():
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_duckdb_database():
-    """
-    Ensure the DuckDB database file exists before running tests.
+    """Ensure the DuckDB database file exists before running tests.
 
     This fixture runs once per test session and initializes the database
     if it doesn't exist yet, which is especially important for CI environments.
     """
-    from src.lib.database import Database
-    from src.common.config import DUCKDB_PATH
     import os
+
+    from src.common.config import DUCKDB_PATH
+    from src.lib.database import Database
 
     # Only initialize if the file doesn't exist
     if not os.path.exists(DUCKDB_PATH):

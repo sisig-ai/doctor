@@ -1,12 +1,13 @@
 """Tests for the indexer module."""
 
-import pytest
-from unittest.mock import patch, MagicMock
 import uuid
-import duckdb
+from unittest.mock import MagicMock, patch
 
-from src.common.indexer import VectorIndexer
+import duckdb
+import pytest
+
 from src.common.config import VECTOR_SIZE
+from src.common.indexer import VectorIndexer
 
 
 @pytest.fixture
@@ -340,7 +341,8 @@ async def test_index_batch_validation():
     # Test with mismatched vectors and payloads
     with pytest.raises(ValueError, match="Number of vectors must match number of payloads"):
         await indexer.index_batch(
-            [[0.1] * VECTOR_SIZE, [0.2] * VECTOR_SIZE], [{"text": "Sample text"}]
+            [[0.1] * VECTOR_SIZE, [0.2] * VECTOR_SIZE],
+            [{"text": "Sample text"}],
         )
 
     # Test with mismatched point_ids
@@ -473,7 +475,7 @@ async def test_search_error_handling(mock_duckdb_connection):
         mock_duckdb_connection.execute.side_effect = [
             None,  # LOAD vss in __init__
             MagicMock(
-                fetchone=MagicMock(return_value=[1])
+                fetchone=MagicMock(return_value=[1]),
             ),  # For any table check that might happen
             Exception("Search error"),  # Error on actual search
         ]

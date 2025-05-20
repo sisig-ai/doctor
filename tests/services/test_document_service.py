@@ -1,17 +1,18 @@
-import pytest
-import duckdb
-from unittest.mock import MagicMock, AsyncMock, patch
 from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.web_service.services.document_service import (
-    levenshtein_distance,
-    is_fuzzy_match,
-    search_docs,
-    list_doc_pages,
-    get_doc_page,
-    list_tags,
-)
+import duckdb
+import pytest
+
 from src.common.config import VECTOR_SIZE
+from src.web_service.services.document_service import (
+    get_doc_page,
+    is_fuzzy_match,
+    levenshtein_distance,
+    list_doc_pages,
+    list_tags,
+    search_docs,
+)
 
 # Fixtures for mocking DuckDB and other dependencies
 
@@ -127,27 +128,29 @@ async def test_search_docs_with_mocked_indexer():
     mock_vector_indexer.search.return_value = [
         {
             "id": "1",
-            "text_chunk": "This is a test document about AI",
-            "page_id": "page1",
-            "url": "https://example.com/ai",
-            "domain": "example.com",
-            "tags": ["ai", "tech"],
             "score": 0.95,
+            "text_chunk": "This is a test document about AI",  # Add text_chunk directly
             "payload": {
-                "text": "This is a test document about AI",
                 "page_id": "page1",
                 "url": "https://example.com/ai",
                 "domain": "example.com",
                 "tags": ["ai", "tech"],
             },
-        }
+        },
     ]
+
+    # Mock the database cursor for BM25 search - empty results
+    mock_bm25_cursor = MagicMock()
+    mock_bm25_cursor.fetchall.return_value = []
+
+    # Mock connection for BM25 search
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value = mock_bm25_cursor
 
     # Mock the generate_embedding function
     with patch("src.lib.embedder.generate_embedding", return_value=[0.1] * VECTOR_SIZE):
         with patch("src.common.indexer.VectorIndexer", return_value=mock_vector_indexer):
             # Call the search_docs function
-            mock_conn = MagicMock()
             result = await search_docs(conn=mock_conn, query="AI", tags=["tech"], max_results=5)
 
             # Verify the results
@@ -155,9 +158,79 @@ async def test_search_docs_with_mocked_indexer():
             assert result.results[0].chunk_text == "This is a test document about AI"
             assert result.results[0].page_id == "page1"
             assert result.results[0].url == "https://example.com/ai"
-            assert result.results[0].score == 0.95
+            assert result.results[0].score == 0.95 * 0.7  # Default hybrid_weight is 0.7
             assert "ai" in result.results[0].tags
             assert "tech" in result.results[0].tags
+
+
+@pytest.mark.unit
+@pytest.mark.async_test
+async def test_hybrid_search_with_mocks():
+    """Test hybrid search combining vector search and BM25."""
+    # Mock the VectorIndexer for vector search
+    mock_vector_indexer = AsyncMock()
+    mock_vector_indexer.search.return_value = [
+        {
+            "id": "vec1",
+            "score": 0.9,
+            "text_chunk": "Vector result for AI",  # Add text_chunk directly
+            "payload": {
+                "page_id": "page1",
+                "url": "https://example.com/ai",
+                "domain": "example.com",
+                "tags": ["ai", "tech"],
+            },
+        },
+    ]
+
+    # Mock the database cursor for BM25 search
+    mock_bm25_cursor = MagicMock()
+    mock_bm25_cursor.fetchall.return_value = [
+        (
+            "page2",
+            "https://example.com/nlp",
+            "example.com",
+            '["nlp", "tech"]',
+            "BM25 result about natural language AI",
+            8.5,
+        ),
+    ]
+
+    # Mock connection for BM25 search
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value = mock_bm25_cursor
+
+    # Test with both vector and BM25 results
+    with patch("src.lib.embedder.generate_embedding", return_value=[0.1] * VECTOR_SIZE):
+        with patch("src.common.indexer.VectorIndexer", return_value=mock_vector_indexer):
+            # Call search_docs with hybrid search (default settings)
+            result = await search_docs(
+                conn=mock_conn,
+                query="AI",
+                tags=None,
+                max_results=5,
+                hybrid_weight=0.6,  # 60% vector, 40% BM25
+            )
+
+            # Should have results from both sources
+            assert len(result.results) == 2
+
+            # Find results by page_id
+            page1_result = next((r for r in result.results if r.page_id == "page1"), None)
+            page2_result = next((r for r in result.results if r.page_id == "page2"), None)
+
+            # Verify both results exist
+            assert page1_result is not None, "Vector search result (page1) not found"
+            assert page2_result is not None, "BM25 search result (page2) not found"
+
+            # Verify vector score (weighted by hybrid_weight)
+            assert page1_result.score == 0.9 * 0.6
+
+            # Verify BM25 score (normalized and weighted by 1-hybrid_weight)
+            normalized_bm25 = min(8.5 / 10.0, 1.0) * 0.4
+            assert (
+                abs(page2_result.score - normalized_bm25) < 0.01
+            )  # Allow small floating point differences
 
 
 @pytest.mark.unit
@@ -169,26 +242,28 @@ async def test_search_docs_with_return_full_document_text():
     mock_vector_indexer.search.return_value = [
         {
             "id": "1",
-            "text_chunk": "This is a test document about AI",
-            "page_id": "page1",
-            "url": "https://example.com/ai",
-            "domain": "example.com",
-            "tags": ["ai", "tech"],
             "score": 0.95,
+            "text_chunk": "This is a test document about AI",  # Add text_chunk directly
             "payload": {
-                "text": "This is a test document about AI",
                 "page_id": "page1",
                 "url": "https://example.com/ai",
                 "domain": "example.com",
                 "tags": ["ai", "tech"],
             },
-        }
+        },
     ]
 
     # Mock for get_doc_page - we need to patch it directly
     mock_get_doc_page = AsyncMock()
     mock_get_doc_page.return_value = MagicMock(text="Full document text about AI", total_lines=3)
+
+    # Mock the database cursor for BM25 search - empty results
+    mock_bm25_cursor = MagicMock()
+    mock_bm25_cursor.fetchall.return_value = []
+
+    # Mock connection for BM25 search
     mock_conn = MagicMock()
+    mock_conn.execute.return_value = mock_bm25_cursor
 
     # Mock the generate_embedding function and patch get_doc_page
     with patch("src.lib.embedder.generate_embedding", return_value=[0.1] * VECTOR_SIZE):
@@ -203,10 +278,10 @@ async def test_search_docs_with_return_full_document_text():
                     return_full_document_text=True,
                 )
 
-            # Verify the results
-            assert len(result.results) == 1
-            assert result.results[0].chunk_text == "Full document text about AI"
-            assert result.results[0].page_id == "page1"
+                # Verify the results
+                assert len(result.results) == 1
+                assert result.results[0].chunk_text == "Full document text about AI"
+                assert result.results[0].page_id == "page1"
 
 
 @pytest.mark.unit
@@ -215,7 +290,9 @@ async def test_search_docs_error_handling():
     """Test error handling in search_docs."""
     # Mock the generate_embedding function to raise an exception
     with patch("src.lib.embedder.generate_embedding", side_effect=Exception("Embedding error")):
+        # Mock connection that also fails for BM25 search
         mock_conn = MagicMock()
+        mock_conn.execute.side_effect = Exception("DB error")
 
         # Call the search_docs function and expect an empty result
         result = await search_docs(conn=mock_conn, query="error test", tags=None, max_results=5)
@@ -309,7 +386,10 @@ async def test_get_doc_page_not_found():
 
     # Call get_doc_page
     result = await get_doc_page(
-        conn=mock_duckdb_connection, page_id="nonexistent-page", starting_line=1, ending_line=-1
+        conn=mock_duckdb_connection,
+        page_id="nonexistent-page",
+        starting_line=1,
+        ending_line=-1,
     )
 
     # Verify results

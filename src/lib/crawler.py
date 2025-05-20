@@ -1,11 +1,11 @@
 """Web crawling functionality using crawl4ai."""
 
-from typing import List, Any
+from typing import Any
 
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
+from crawl4ai.content_filter_strategy import PruningContentFilter
 from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
-from crawl4ai.content_filter_strategy import PruningContentFilter
 
 from src.common.logger import get_logger
 
@@ -14,10 +14,12 @@ logger = get_logger(__name__)
 
 
 async def crawl_url(
-    url: str, max_pages: int = 100, max_depth: int = 2, strip_urls: bool = True
-) -> List[Any]:
-    """
-    Crawl a URL and return the results.
+    url: str,
+    max_pages: int = 100,
+    max_depth: int = 2,
+    strip_urls: bool = True,
+) -> list[Any]:
+    """Crawl a URL and return the results.
 
     Args:
         url: The URL to start crawling from
@@ -27,6 +29,7 @@ async def crawl_url(
 
     Returns:
         List of crawled page results
+
     """
     logger.info(f"Starting crawl for URL: {url} with max_pages={max_pages}")
 
@@ -65,14 +68,14 @@ async def crawl_url(
 
 
 def extract_page_text(page_result: Any) -> str:
-    """
-    Extract the text content from a crawl4ai page result.
+    """Extract the text content from a crawl4ai page result.
 
     Args:
         page_result: The crawl result for the page
 
     Returns:
         The extracted text content
+
     """
     # Use filtered markdown if available, otherwise use raw markdown,
     # extracted content, or HTML as fallbacks

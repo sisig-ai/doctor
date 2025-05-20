@@ -1,7 +1,7 @@
 """Pydantic models for the Doctor project."""
 
 from datetime import datetime
-from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -9,7 +9,7 @@ class FetchUrlRequest(BaseModel):
     """Request model for the /fetch_url endpoint."""
 
     url: str = Field(..., description="The URL to start indexing from")
-    tags: Optional[List[str]] = Field(default=None, description="Tags to assign this website")
+    tags: list[str] | None = Field(default=None, description="Tags to assign this website")
     max_pages: int = Field(default=100, description="How many pages to index", ge=1, le=1000)
 
 
@@ -23,9 +23,12 @@ class SearchDocsRequest(BaseModel):
     """Request model for the /search_docs endpoint."""
 
     query: str = Field(..., description="The search string to query the database with")
-    tags: Optional[List[str]] = Field(default=None, description="Tags to limit the search with")
+    tags: list[str] | None = Field(default=None, description="Tags to limit the search with")
     max_results: int = Field(
-        default=10, description="Maximum number of results to return", ge=1, le=100
+        default=10,
+        description="Maximum number of results to return",
+        ge=1,
+        le=100,
     )
 
 
@@ -34,7 +37,7 @@ class SearchResult(BaseModel):
 
     chunk_text: str = Field(..., description="The text of the chunk")
     page_id: str = Field(..., description="Reference to the original page")
-    tags: List[str] = Field(default_factory=list, description="Tags associated with the chunk")
+    tags: list[str] = Field(default_factory=list, description="Tags associated with the chunk")
     score: float = Field(..., description="Similarity score")
     url: str = Field(..., description="Original URL of the page")
 
@@ -42,7 +45,7 @@ class SearchResult(BaseModel):
 class SearchDocsResponse(BaseModel):
     """Response model for the /search_docs endpoint."""
 
-    results: List[SearchResult] = Field(default_factory=list, description="Search results")
+    results: list[SearchResult] = Field(default_factory=list, description="Search results")
 
 
 class JobProgressRequest(BaseModel):
@@ -58,15 +61,17 @@ class JobProgressResponse(BaseModel):
     pages_total: int = Field(..., description="Total number of pages discovered")
     completed: bool = Field(..., description="Whether the job is completed")
     status: str = Field(..., description="Current job status")
-    error_message: Optional[str] = Field(default=None, description="Error message if job failed")
-    progress_percent: Optional[int] = Field(
-        default=None, description="Percentage of crawl completed"
+    error_message: str | None = Field(default=None, description="Error message if job failed")
+    progress_percent: int | None = Field(
+        default=None,
+        description="Percentage of crawl completed",
     )
-    url: Optional[str] = Field(default=None, description="URL being crawled")
-    max_pages: Optional[int] = Field(default=None, description="Maximum pages to crawl")
-    created_at: Optional[datetime] = Field(default=None, description="When the job was created")
-    updated_at: Optional[datetime] = Field(
-        default=None, description="When the job was last updated"
+    url: str | None = Field(default=None, description="URL being crawled")
+    max_pages: int | None = Field(default=None, description="Maximum pages to crawl")
+    created_at: datetime | None = Field(default=None, description="When the job was created")
+    updated_at: datetime | None = Field(
+        default=None,
+        description="When the job was last updated",
     )
 
 
@@ -74,7 +79,7 @@ class ListDocPagesRequest(BaseModel):
     """Request model for the /list_doc_pages endpoint."""
 
     page: int = Field(default=1, description="Page number", ge=1)
-    tags: Optional[List[str]] = Field(default=None, description="Tags to filter by")
+    tags: list[str] | None = Field(default=None, description="Tags to filter by")
 
 
 class DocPageSummary(BaseModel):
@@ -82,7 +87,7 @@ class DocPageSummary(BaseModel):
 
     page_id: str = Field(..., description="Unique page ID")
     domain: str = Field(..., description="Domain of the page")
-    tags: List[str] = Field(default_factory=list, description="Tags associated with the page")
+    tags: list[str] = Field(default_factory=list, description="Tags associated with the page")
     crawl_date: datetime = Field(..., description="When the page was crawled")
     url: str = Field(..., description="URL of the page")
 
@@ -90,8 +95,9 @@ class DocPageSummary(BaseModel):
 class ListDocPagesResponse(BaseModel):
     """Response model for the /list_doc_pages endpoint."""
 
-    doc_pages: List[DocPageSummary] = Field(
-        default_factory=list, description="List of document pages"
+    doc_pages: list[DocPageSummary] = Field(
+        default_factory=list,
+        description="List of document pages",
     )
     total_pages: int = Field(..., description="Total number of pages matching the query")
     current_page: int = Field(..., description="Current page number")
@@ -122,10 +128,10 @@ class Job(BaseModel):
     pages_discovered: int = 0
     pages_crawled: int = 0
     max_pages: int
-    tags: List[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 class Page(BaseModel):
@@ -136,7 +142,7 @@ class Page(BaseModel):
     domain: str
     raw_text: str
     crawl_date: datetime = Field(default_factory=datetime.now)
-    tags: List[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
 
 
 class Chunk(BaseModel):
@@ -146,21 +152,22 @@ class Chunk(BaseModel):
     text: str
     page_id: str
     domain: str
-    tags: List[str] = Field(default_factory=list)
-    embedding: List[float]
+    tags: list[str] = Field(default_factory=list)
+    embedding: list[float]
 
 
 class DeleteDocsRequest(BaseModel):
     """Request model for the /delete_docs endpoint."""
 
-    tags: Optional[List[str]] = Field(default=None, description="Tags to filter by")
-    domain: Optional[str] = Field(default=None, description="Domain substring to filter by")
-    page_ids: Optional[List[str]] = Field(default=None, description="Specific page IDs to delete")
+    tags: list[str] | None = Field(default=None, description="Tags to filter by")
+    domain: str | None = Field(default=None, description="Domain substring to filter by")
+    page_ids: list[str] | None = Field(default=None, description="Specific page IDs to delete")
 
 
 class ListTagsResponse(BaseModel):
     """Response model for the /list_tags endpoint."""
 
-    tags: List[str] = Field(
-        default_factory=list, description="List of all unique tags in the database"
+    tags: list[str] = Field(
+        default_factory=list,
+        description="List of all unique tags in the database",
     )

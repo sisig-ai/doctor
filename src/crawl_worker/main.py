@@ -4,8 +4,8 @@ import redis
 from rq import Worker
 
 from src.common.config import REDIS_URI, check_config
-from src.lib.database import Database
 from src.common.logger import get_logger
+from src.lib.database import Database
 
 # Get logger for this module
 logger = get_logger(__name__)
@@ -16,6 +16,7 @@ def main() -> int:
 
     Returns:
         int: The exit code (0 for success, 1 for failure).
+
     """
     # Validate configuration
     if not check_config():
@@ -37,7 +38,7 @@ def main() -> int:
             return 1
 
         result = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'document_embeddings'"
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'document_embeddings'",
         ).fetchone()
 
         if result is None:
@@ -49,12 +50,11 @@ def main() -> int:
         if table_count == 0:
             logger.exception("document_embeddings table is still missing after initialization!")
             return 1
-        else:
-            logger.info("Verified document_embeddings table exists")
+        logger.info("Verified document_embeddings table exists")
 
         db.close()
     except Exception as e:
-        logger.error(f"Database initialization failed: {str(e)}")
+        logger.error(f"Database initialization failed: {e!s}")
         return 1
 
     # Connect to Redis
@@ -68,7 +68,7 @@ def main() -> int:
         worker.work(with_scheduler=True)
         return 0  # Return success if worker completes normally
     except Exception as redis_error:
-        logger.error(f"Redis worker error: {str(redis_error)}")
+        logger.error(f"Redis worker error: {redis_error!s}")
         return 1
 
 

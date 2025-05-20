@@ -1,27 +1,29 @@
 """Task definitions for the Doctor Crawl Worker."""
 
-import datetime
-from typing import List, Optional, Dict, Any
-
 import asyncio
+import datetime
+from typing import Any
+
 import redis
 from rq import Queue
 
 from src.common.config import REDIS_URI
-from src.lib.database import Database
-from src.lib.crawler import crawl_url
-from src.common.processor import process_page_batch
 from src.common.logger import get_logger
+from src.common.processor import process_page_batch
+from src.lib.crawler import crawl_url
+from src.lib.database import Database
 
 # Get logger for this module
 logger = get_logger(__name__)
 
 
 def create_job(
-    url: str, job_id: str, tags: Optional[List[str]] = None, max_pages: int = 100
+    url: str,
+    job_id: str,
+    tags: list[str] | None = None,
+    max_pages: int = 100,
 ) -> str:
-    """
-    Create a new crawl job in the database.
+    """Create a new crawl job in the database.
 
     Args:
         url: The URL to start crawling from
@@ -31,6 +33,7 @@ def create_job(
 
     Returns:
         The job ID
+
     """
     if tags is None:
         tags = []
@@ -74,7 +77,8 @@ def create_job(
 
         # Verify the job was created by reading it back
         job_record = db.conn.execute(
-            "SELECT job_id FROM jobs WHERE job_id = ?", (job_id,)
+            "SELECT job_id FROM jobs WHERE job_id = ?",
+            (job_id,),
         ).fetchone()
         if not job_record:
             logger.error(f"Job {job_id} was not successfully created in the database!")
@@ -88,23 +92,32 @@ def create_job(
 
         # Enqueue the crawl task
         logger.info(f"Enqueueing crawl task for job {job_id}")
-        queue.enqueue("src.crawl_worker.tasks.perform_crawl", job_id, url, tags, max_pages)
+        queue.enqueue(
+            "src.crawl_worker.tasks.perform_crawl",
+            job_id,
+            url,
+            tags,
+            max_pages,
+            job_timeout=600,
+        )
 
         logger.info(f"Enqueued crawl task for job {job_id}")
 
         return job_id
     except Exception as e:
-        logger.exception(f"Error creating job for URL {url}: {str(e)}")
+        logger.exception(f"Error creating job for URL {url}: {e!s}")
         raise
     finally:
         db.close()
 
 
 def perform_crawl(
-    job_id: str, url: str, tags: Optional[List[str]] = None, max_pages: int = 100
-) -> Dict[str, Any]:
-    """
-    Perform a crawl job.
+    job_id: str,
+    url: str,
+    tags: list[str] | None = None,
+    max_pages: int = 100,
+) -> dict[str, Any]:
+    """Perform a crawl job.
 
     Args:
         job_id: The unique ID of the job
@@ -114,6 +127,7 @@ def perform_crawl(
 
     Returns:
         Dict with job status information
+
     """
     if tags is None:
         tags = []
@@ -136,7 +150,7 @@ def perform_crawl(
         return result
 
     except Exception as e:
-        logger.exception(f"Error in crawl job {job_id}: {str(e)}")
+        logger.exception(f"Error in crawl job {job_id}: {e!s}")
 
         # Update job status to failed
         with Database() as db:
@@ -146,10 +160,12 @@ def perform_crawl(
 
 
 async def _execute_pipeline(
-    job_id: str, url: str, tags: List[str], max_pages: int
-) -> Dict[str, Any]:
-    """
-    Execute the crawl and processing pipeline.
+    job_id: str,
+    url: str,
+    tags: list[str],
+    max_pages: int,
+) -> dict[str, Any]:
+    """Execute the crawl and processing pipeline.
 
     Args:
         job_id: The unique ID of the job
@@ -159,6 +175,7 @@ async def _execute_pipeline(
 
     Returns:
         Dict with job status information
+
     """
     logger.info(f"Job {job_id}: Starting pipeline for URL: {url} with max_pages={max_pages}")
 
@@ -200,7 +217,7 @@ async def _execute_pipeline(
 
         pages_crawled = len(processed_page_ids)
         logger.info(
-            f"Job {job_id}: Successfully processed {pages_crawled}/{pages_discovered} pages"
+            f"Job {job_id}: Successfully processed {pages_crawled}/{pages_discovered} pages",
         )
 
         # Final update before completing
@@ -227,7 +244,7 @@ async def _execute_pipeline(
 
     # Return final status
     logger.info(
-        f"Job {job_id}: Pipeline completed with {pages_crawled}/{pages_discovered} pages processed"
+        f"Job {job_id}: Pipeline completed with {pages_crawled}/{pages_discovered} pages processed",
     )
     return {
         "job_id": job_id,
@@ -239,12 +256,11 @@ async def _execute_pipeline(
 
 def delete_docs(
     task_id: str,
-    tags: Optional[List[str]] = None,
-    domain: Optional[str] = None,
-    page_ids: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """
-    Delete documents from the database based on filters.
+    tags: list[str] | None = None,
+    domain: str | None = None,
+    page_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Delete documents from the database based on filters.
 
     Args:
         task_id: Unique ID for the delete task
@@ -254,9 +270,10 @@ def delete_docs(
 
     Returns:
         Dictionary with deletion statistics
+
     """
     logger.info(
-        f"Starting delete task {task_id} with filters: tags={tags}, domain={domain}, page_ids={page_ids}"
+        f"Starting delete task {task_id} with filters: tags={tags}, domain={domain}, page_ids={page_ids}",
     )
 
     # Get a database instance with write access
@@ -312,7 +329,7 @@ def delete_docs(
             "page_ids": page_ids_to_delete,
         }
     except Exception as e:
-        logger.error(f"Error deleting documents: {str(e)}")
+        logger.error(f"Error deleting documents: {e!s}")
         raise
     finally:
         db.close()

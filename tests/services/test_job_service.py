@@ -1,19 +1,20 @@
 """Tests for the job service."""
 
-import pytest
-from unittest.mock import patch, MagicMock
-import duckdb
 import datetime
+from unittest.mock import MagicMock, patch
+
+import duckdb
+import pytest
 from rq import Queue
 
-from src.web_service.services.job_service import (
-    fetch_url,
-    get_job_progress,
-    get_job_count,
-)
 from src.common.models import (
     FetchUrlResponse,
     JobProgressResponse,
+)
+from src.web_service.services.job_service import (
+    fetch_url,
+    get_job_count,
+    get_job_progress,
 )
 
 

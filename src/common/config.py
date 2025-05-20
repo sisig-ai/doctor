@@ -1,7 +1,6 @@
 """Configuration settings for the Doctor project."""
 
 import os
-from typing import List
 
 from src.common.logger import get_logger
 
@@ -9,7 +8,7 @@ from src.common.logger import get_logger
 logger = get_logger(__name__)
 
 # Vector settings
-VECTOR_SIZE = 1536  # OpenAI ada-002 embedding size
+VECTOR_SIZE = 3072  # OpenAI text-embedding-3-large embedding size
 
 # Redis settings
 REDIS_URI = os.getenv("REDIS_URI", "redis://localhost:6379")
@@ -23,7 +22,8 @@ DB_RETRY_DELAY_SEC = float(os.getenv("DB_RETRY_DELAY_SEC", "0.5"))
 
 # OpenAI settings
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-EMBEDDING_MODEL = "openai/text-embedding-ada-002"
+DOC_EMBEDDING_MODEL = "openai/text-embedding-3-large"
+QUERY_EMBEDDING_MODEL = "openai/text-embedding-3-large"
 
 # Web service settings
 WEB_SERVICE_HOST = os.getenv("WEB_SERVICE_HOST", "0.0.0.0")
@@ -34,11 +34,14 @@ DEFAULT_MAX_PAGES = 100
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
+# Search settings
+RETURN_FULL_DOCUMENT_TEXT = True
+
 # MCP Server settings
 DOCTOR_BASE_URL = os.getenv("DOCTOR_BASE_URL", "http://localhost:9111")
 
 
-def validate_config() -> List[str]:
+def validate_config() -> list[str]:
     """Validate the configuration and return a list of any issues."""
     issues = []
 

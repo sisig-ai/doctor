@@ -17,6 +17,10 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.ropeproject/
+.ruff_cache/
+.pytest_cache/
+data/
 
 # Virtual Environment
 .env

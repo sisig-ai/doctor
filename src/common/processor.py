@@ -1,16 +1,16 @@
 """Page processing pipeline combining crawling, chunking, embedding, and indexing."""
 
-from typing import List, Any
-from urllib.parse import urlparse
 import asyncio
 from itertools import islice
+from typing import Any
+from urllib.parse import urlparse
 
-from src.lib.crawler import extract_page_text
-from src.lib.chunker import TextChunker
-from src.lib.embedder import generate_embedding
 from src.common.indexer import VectorIndexer
 from src.common.logger import get_logger
+from src.lib.chunker import TextChunker
+from src.lib.crawler import extract_page_text
 from src.lib.database import Database
+from src.lib.embedder import generate_embedding
 
 # Configure logging
 logger = get_logger(__name__)
@@ -19,11 +19,10 @@ logger = get_logger(__name__)
 async def process_crawl_result(
     page_result: Any,
     job_id: str,
-    tags: List[str] | None = None,
+    tags: list[str] | None = None,
     max_concurrent_embeddings: int = 5,
 ) -> str:
-    """
-    Process a single crawled page result through the entire pipeline.
+    """Process a single crawled page result through the entire pipeline.
 
     Args:
         page_result: The crawl result for the page
@@ -33,6 +32,7 @@ async def process_crawl_result(
 
     Returns:
         The ID of the processed page
+
     """
     if tags is None:
         tags = []  # Initialize as empty list instead of None
@@ -92,7 +92,7 @@ async def process_crawl_result(
                 await indexer.index_vector(embedding, payload)
                 return True
             except Exception as chunk_error:
-                logger.error(f"Error processing chunk: {str(chunk_error)}")
+                logger.error(f"Error processing chunk: {chunk_error!s}")
                 return False
 
         # Process chunks in batches with limited concurrency
@@ -104,19 +104,20 @@ async def process_crawl_result(
 
             # Process this batch in parallel
             results = await asyncio.gather(
-                *[process_chunk(chunk) for chunk in batch_chunks], return_exceptions=False
+                *[process_chunk(chunk) for chunk in batch_chunks],
+                return_exceptions=False,
             )
 
             successful_chunks += sum(1 for result in results if result)
 
         logger.info(
-            f"Successfully indexed {successful_chunks}/{len(chunks)} chunks for page {page_id}"
+            f"Successfully indexed {successful_chunks}/{len(chunks)} chunks for page {page_id}",
         )
 
         return page_id
 
     except Exception as e:
-        logger.error(f"Error processing page {page_result.url}: {str(e)}")
+        logger.error(f"Error processing page {page_result.url}: {e!s}")
         raise
     finally:
         # Close the DuckDB connection if it exists
@@ -131,13 +132,12 @@ async def process_crawl_result(
 
 
 async def process_page_batch(
-    page_results: List[Any],
+    page_results: list[Any],
     job_id: str,
-    tags: List[str] | None = None,
+    tags: list[str] | None = None,
     batch_size: int = 10,
-) -> List[str]:
-    """
-    Process a batch of crawled pages.
+) -> list[str]:
+    """Process a batch of crawled pages.
 
     Args:
         page_results: List of crawl results
@@ -147,6 +147,7 @@ async def process_page_batch(
 
     Returns:
         List of processed page IDs
+
     """
     if tags is None:
         tags = []
@@ -165,7 +166,7 @@ async def process_page_batch(
 
                 # Update job progress
                 with Database() as db:
-                    db.update_job_status(
+                    await db.update_job_status(
                         job_id=job_id,
                         status="running",
                         pages_discovered=len(page_results),
@@ -173,7 +174,7 @@ async def process_page_batch(
                     )
 
             except Exception as page_error:
-                logger.error(f"Error in batch processing for {page_result.url}: {str(page_error)}")
+                logger.error(f"Error in batch processing for {page_result.url}: {page_error!s}")
                 continue
 
     return processed_page_ids

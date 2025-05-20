@@ -1,8 +1,8 @@
 """Main module for the Doctor Web Service."""
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from typing import AsyncIterator
 import redis
 from fastapi import FastAPI
 from fastapi_mcp import FastApiMCP
@@ -13,8 +13,8 @@ from src.common.config import (
     WEB_SERVICE_PORT,
     check_config,
 )
-from src.lib.database import Database
 from src.common.logger import get_logger
+from src.lib.database import Database
 from src.web_service.api import api_router
 
 # Get logger for this module
@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     Yields:
         None: Indicates the application is ready.
+
     """
     # Initialize databases in read-only mode for the web service
     db = Database(read_only=True)
@@ -50,6 +51,7 @@ def create_application() -> FastAPI:
 
     Returns:
         FastAPI: Configured FastAPI application
+
     """
     app = FastAPI(
         title="Doctor API",
