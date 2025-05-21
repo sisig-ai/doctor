@@ -150,18 +150,15 @@ async def get_job_count() -> int:
         int: Total number of jobs
 
     """
-    from src.lib.database import Database
+    from src.lib.database import get_connection
 
-    db = None
     try:
-        db = Database(read_only=True)
-        conn = db.connect()
-        job_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-        logger.info(f"Database contains {job_count} total jobs.")
-        return job_count
+        # Use proper connection pool with context manager
+        async with await get_connection(read_only=True) as conn_manager:
+            conn = await conn_manager.async_ensure_connection()
+            job_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+            logger.info(f"Database contains {job_count} total jobs.")
+            return job_count
     except Exception as count_error:
         logger.warning(f"Failed to count jobs in database: {count_error!s}")
         return -1
-    finally:
-        if db:
-            db.close()

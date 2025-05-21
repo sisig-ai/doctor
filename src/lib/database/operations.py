@@ -8,6 +8,10 @@ storing crawled pages, updating job statuses, and managing checkpoints.
 It relies on `DuckDBConnectionManager` for actual database communication and includes
 several methods and properties for backward compatibility with older versions of the
 original `Database` class, primarily to support existing tests.
+
+For new code, consider using the more efficient connection pool and batch operations:
+- For read-only operations in the web service: Use `connection_pool.get_connection(read_only=True)`
+- For bulk operations: Use the `batch` module instead of individual operations
 """
 
 import asyncio
@@ -138,61 +142,29 @@ class DatabaseOperations:
             duckdb.Error: For DuckDB specific errors.
             RuntimeError: For other unexpected errors during the storage process.
 
+        Note:
+            For bulk operations, consider using batch_store_pages() from the batch module
+            which is more efficient for storing multiple pages.
         """
+        # Import here to avoid circular imports
+        from .batch import batch_store_pages
+
         if tags is None:
             tags = []
         current_page_id: str = page_id if page_id is not None else str(uuid.uuid4())
-        domain: str = urlparse(url).netloc
+        urlparse(url).netloc
 
         logger.debug(
             f"Storing page {current_page_id} from {url} with {len(text)} characters.",
         )
 
-        async with self._write_lock:
-            conn = self.db.ensure_connection()
-            try:
-                await asyncio.to_thread(self.db.begin_transaction)
-                await asyncio.to_thread(
-                    conn.execute,
-                    """INSERT INTO pages (id, url, domain, raw_text, crawl_date, tags, job_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        current_page_id,
-                        url,
-                        domain,
-                        text,
-                        datetime.datetime.now(datetime.UTC),
-                        self.serialize_tags(tags),
-                        job_id,
-                    ),
-                )
-                await asyncio.to_thread(self.db.commit)
-            except duckdb.Error:
-                logger.exception(
-                    f"DuckDB error storing page {current_page_id} for URL {url}",
-                )
-                await asyncio.to_thread(self.db.rollback)
-                if conn and hasattr(conn, "rollback") and self.db.transaction_active:
-                    try:  # pragma: no cover
-                        logger.debug(
-                            "Attempting direct rollback on connection object due to DB error.",
-                        )
-                        conn.rollback()
-                    except Exception as direct_rollback_err:  # pragma: no cover
-                        logger.warning(
-                            f"Direct rollback on connection failed: {direct_rollback_err}",
-                        )
-                raise
-            except Exception as e_generic:  # pragma: no cover
-                msg = f"Unexpected error storing page {current_page_id} for URL {url}"
-                logger.exception(msg)
-                await asyncio.to_thread(self.db.rollback)
-                raise RuntimeError(msg) from e_generic  # Use RuntimeError for generic
-            else:
-                logger.debug(
-                    f"Successfully stored page {current_page_id} in database.",
-                )
-                return current_page_id
+        try:
+            # Use the new batch operation for a single page
+            page_ids = await batch_store_pages([(url, text, job_id, tags, current_page_id)])
+            return page_ids[0]
+        except Exception as e:
+            logger.exception(f"Error storing page {current_page_id} for URL {url}: {e}")
+            raise
 
     def _build_update_job_query(
         self,
@@ -244,67 +216,33 @@ class DatabaseOperations:
             duckdb.Error: For DuckDB specific errors.
             RuntimeError: For other unexpected errors during the update.
 
+        Note:
+            For bulk job updates, consider using BatchJobUpdate from the batch module
+            which is more efficient for updating multiple jobs.
         """
+        # Import here to avoid circular imports
+        from .batch import BatchJobUpdate, BatchExecutor
+
         logger.info(
             f"Updating job {job_id}: status='{status}', discovered={pages_discovered}, "
             f"crawled={pages_crawled}, error='{error_message is not None}'",
         )
-        update_successful = False
-        async with self._write_lock:
-            conn = self.db.ensure_connection()
-            try:
-                await asyncio.to_thread(self.db.begin_transaction)
 
-                query, params_tuple = self._build_update_job_query(
-                    job_id,
-                    status,
-                    pages_discovered,
-                    pages_crawled,
-                    error_message,
-                )
+        try:
+            # Create a batch job update
+            batch_update = BatchJobUpdate()
+            batch_update.add_job_update(
+                job_id, status, pages_discovered, pages_crawled, error_message
+            )
 
-                cursor = await asyncio.to_thread(conn.execute, query, params_tuple)
-                rows_affected = cursor.rowcount if cursor else 0
+            # Execute the batch with proper checkpointing
+            executor = BatchExecutor(checkpoint_after=(status in ["completed", "failed"]))
+            await executor.execute_batch(batch_update)
 
-                if rows_affected == 0:
-                    logger.warning(
-                        f"Job status update for {job_id} affected 0 rows. Job may not exist.",
-                    )
-                else:
-                    logger.debug(
-                        f"Job status update for {job_id} affected {rows_affected} rows.",
-                    )
-                    update_successful = True
-                await asyncio.to_thread(self.db.commit)
-            except duckdb.Error:
-                logger.exception(
-                    f"DuckDB error updating job {job_id} to status {status}",
-                )
-                await asyncio.to_thread(self.db.rollback)
-                if conn and hasattr(conn, "rollback") and self.db.transaction_active:
-                    try:  # pragma: no cover
-                        logger.debug(
-                            "Attempting direct rollback on connection object due to DB error.",
-                        )
-                        conn.rollback()
-                    except Exception as direct_rollback_err:  # pragma: no cover
-                        logger.warning(
-                            f"Direct rollback on connection failed: {direct_rollback_err}",
-                        )
-                raise
-            except Exception as e_generic:  # pragma: no cover
-                msg = f"Unexpected error updating job {job_id} to status {status}"
-                logger.exception(msg)
-                await asyncio.to_thread(self.db.rollback)
-                raise RuntimeError(msg) from e_generic  # Use RuntimeError
-            else:
-                if update_successful and status in ["completed", "failed"]:
-                    await self.checkpoint_async()
-                    logger.info(
-                        f"Job {job_id} successfully updated to {status} and checkpointed.",
-                    )
-                elif update_successful:
-                    logger.info(f"Job {job_id} successfully updated to {status}.")
+            logger.info(f"Job {job_id} successfully updated to {status}.")
+        except Exception as e:
+            logger.exception(f"Error updating job {job_id} to status {status}: {e}")
+            raise
 
     async def checkpoint_async(self) -> None:
         """Force a database checkpoint to ensure changes are persisted.

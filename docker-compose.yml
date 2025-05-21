@@ -31,6 +31,7 @@ services:
       - REDIS_URI=redis://redis:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - PYTHONPATH=/app
+      - DB_SYNC_INTERVAL_SEC=10
     depends_on:
       redis:
         condition: service_healthy

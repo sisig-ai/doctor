@@ -6,15 +6,182 @@ managing database schema (tables, indexes, triggers), and handling transactions.
 It is the foundational layer for database interactions in the project.
 """
 
+import asyncio
 import pathlib
+import time
 from types import TracebackType
 
 import duckdb
 
-from src.common.config import DATA_DIR, DUCKDB_PATH
+from src.common.config import DATA_DIR, DUCKDB_PATH, DUCKDB_READ_PATH, DUCKDB_WRITE_PATH
 from src.common.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def connect_with_retry(
+    read_only: bool = False, max_retries: int = -1, retry_delay: float = 1.0
+) -> duckdb.DuckDBPyConnection:
+    """Connect to DuckDB with retry logic for lock conflicts.
+
+    This function will retry the connection if it encounters a lock conflict,
+    which happens when different processes try to access the database
+    simultaneously with different access modes.
+
+    Note:
+        This is a blocking operation. For async code, use async_connect_with_retry instead.
+
+    Args:
+        read_only: Whether to open the connection in read-only mode. Defaults to False.
+        max_retries: Maximum number of retries, or -1 for infinite retries. Defaults to -1.
+        retry_delay: Delay between retries in seconds. Defaults to 1.0.
+
+    Returns:
+        An active DuckDB connection.
+
+    Raises:
+        Exception: If the connection fails after max_retries attempts.
+    """
+    # Select the appropriate database file based on read_only flag
+    if read_only:
+        db_path = pathlib.Path(DUCKDB_READ_PATH)
+        # For backwards compatibility, if read file doesn't exist, try the original path
+        if not db_path.exists() and pathlib.Path(DUCKDB_PATH).exists():
+            db_path = pathlib.Path(DUCKDB_PATH)
+    else:
+        db_path = pathlib.Path(DUCKDB_WRITE_PATH)
+        # For backwards compatibility, if write file doesn't exist, use the original path
+        if not db_path.exists() and pathlib.Path(DUCKDB_PATH).exists():
+            db_path = pathlib.Path(DUCKDB_PATH)
+
+    # If database doesn't exist and in read-only mode, fail immediately
+    if not db_path.exists() and read_only:
+        raise FileNotFoundError(
+            f"Database file {db_path} does not exist and read-only mode requested"
+        )
+
+    # Make sure data directory exists
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    retries = 0
+    last_error = None
+
+    # -1 means retry forever
+    while max_retries == -1 or retries < max_retries:
+        try:
+            # Attempt to connect
+            conn = duckdb.connect(str(db_path), read_only=read_only)
+            # Test the connection
+            conn.execute("SELECT 1").fetchone()
+            logger.info(f"Successfully connected to DuckDB at {db_path} (read_only={read_only})")
+            return conn
+        except duckdb.IOException as e:
+            # This is likely a lock conflict
+            if "Conflicting lock is held in PID" in str(e):
+                retries += 1
+                last_error = e
+                logger.warning(
+                    f"Connection attempt {retries} failed due to lock conflict, "
+                    f"retrying in {retry_delay} seconds: {e}"
+                )
+                time.sleep(retry_delay)
+            else:
+                # Some other I/O error, don't retry
+                logger.error(f"Failed to connect to DuckDB due to I/O error: {e}")
+                raise
+        except Exception as e:
+            # Other exceptions we don't retry
+            logger.error(f"Failed to connect to DuckDB due to unexpected error: {e}")
+            raise
+
+    # If we get here, we've exceeded max_retries
+    if last_error:
+        logger.error(f"Failed to connect after {retries} attempts")
+        raise last_error
+    else:
+        raise RuntimeError("Failed to connect to DuckDB, but no error was recorded")
+
+
+async def async_connect_with_retry(
+    read_only: bool = False, max_retries: int = -1, retry_delay: float = 1.0
+) -> duckdb.DuckDBPyConnection:
+    """Asynchronously connect to DuckDB with retry logic for lock conflicts.
+
+    This function will retry the connection if it encounters a lock conflict,
+    which happens when different processes try to access the database
+    simultaneously with different access modes. Unlike the synchronous version,
+    this does not block the event loop during retries.
+
+    Args:
+        read_only: Whether to open the connection in read-only mode. Defaults to False.
+        max_retries: Maximum number of retries, or -1 for infinite retries. Defaults to -1.
+        retry_delay: Delay between retries in seconds. Defaults to 1.0.
+
+    Returns:
+        An active DuckDB connection.
+
+    Raises:
+        Exception: If the connection fails after max_retries attempts.
+    """
+    # Select the appropriate database file based on read_only flag
+    if read_only:
+        db_path = pathlib.Path(DUCKDB_READ_PATH)
+        # For backwards compatibility, if read file doesn't exist, try the original path
+        if not db_path.exists() and pathlib.Path(DUCKDB_PATH).exists():
+            db_path = pathlib.Path(DUCKDB_PATH)
+    else:
+        db_path = pathlib.Path(DUCKDB_WRITE_PATH)
+        # For backwards compatibility, if write file doesn't exist, use the original path
+        if not db_path.exists() and pathlib.Path(DUCKDB_PATH).exists():
+            db_path = pathlib.Path(DUCKDB_PATH)
+
+    # If database doesn't exist and in read-only mode, fail immediately
+    if not db_path.exists() and read_only:
+        raise FileNotFoundError(
+            f"Database file {db_path} does not exist and read-only mode requested"
+        )
+
+    # Make sure data directory exists
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    retries = 0
+    last_error = None
+
+    # -1 means retry forever
+    while max_retries == -1 or retries < max_retries:
+        try:
+            # Attempt to connect - DuckDB itself is not async, so we don't need to await this
+            conn = duckdb.connect(str(db_path), read_only=read_only)
+            # Test the connection
+            conn.execute("SELECT 1").fetchone()
+            logger.info(f"Successfully connected to DuckDB at {db_path} (read_only={read_only})")
+            return conn
+        except duckdb.IOException as e:
+            # This is likely a lock conflict
+            if "Conflicting lock is held in PID" in str(e):
+                retries += 1
+                last_error = e
+                logger.warning(
+                    f"Connection attempt {retries} failed due to lock conflict, "
+                    f"retrying in {retry_delay} seconds: {e}"
+                )
+                # Use async sleep instead of blocking sleep
+                await asyncio.sleep(retry_delay)
+            else:
+                # Some other I/O error, don't retry
+                logger.error(f"Failed to connect to DuckDB due to I/O error: {e}")
+                raise
+        except Exception as e:
+            # Other exceptions we don't retry
+            logger.error(f"Failed to connect to DuckDB due to unexpected error: {e}")
+            raise
+
+    # If we get here, we've exceeded max_retries
+    if last_error:
+        logger.error(f"Failed to connect after {retries} attempts")
+        raise last_error
+    else:
+        raise RuntimeError("Failed to connect to DuckDB, but no error was recorded")
 
 
 class DuckDBConnectionManager:
@@ -34,7 +201,10 @@ class DuckDBConnectionManager:
         """
         self.read_only: bool = read_only
         self.conn: duckdb.DuckDBPyConnection | None = None
-        self.transaction_active: bool = False
+        self._transaction_active: bool = False
+        # These will be set by the connection pool
+        self._lock_manager = None
+        self._is_read_only = read_only
 
     def _load_single_extension(
         self,
@@ -116,8 +286,8 @@ class DuckDBConnectionManager:
             logger.error(msg)
             raise FileNotFoundError(msg)
         try:
-            self.conn = duckdb.connect(str(db_file_path), read_only=self.read_only)
-            self.conn.execute("SELECT 1").fetchone()  # Test connection
+            # Use connect_with_retry for better handling of lock conflicts
+            self.conn = connect_with_retry(read_only=self.read_only)
             self._load_extensions(self.conn)
         except duckdb.Error:
             logger.exception(f"Failed to connect to DuckDB at {db_file_path}")
@@ -132,38 +302,75 @@ class DuckDBConnectionManager:
         else:
             return self.conn
 
-    def close(self) -> None:
-        """Close the database connection if it is open.
+    async def async_connect(self) -> duckdb.DuckDBPyConnection:
+        """Asynchronously establish and return a DuckDB connection.
 
-        Attempts to roll back any active transaction before closing.
-        Logs any errors during rollback or close but suppresses them.
+        Ensures the data directory exists and loads necessary extensions (FTS, VSS)
+        upon successful connection.
+
+        Returns:
+            duckdb.DuckDBPyConnection: An active DuckDB connection object.
+
+        Raises:
+            FileNotFoundError: If in read-only mode and the database file doesn't exist.
+            IOError: For OS-level I/O errors during directory creation.
+            duckdb.Error: For DuckDB-specific connection failures.
+
         """
-        if self.conn:
+        data_dir_path = pathlib.Path(DATA_DIR)
+        db_file_path = pathlib.Path(DUCKDB_PATH)
+        try:
+            data_dir_path.mkdir(parents=True, exist_ok=True)
+        except OSError as e_mkdir:  # pragma: no cover
+            msg = f"Failed to create data directory {DATA_DIR}: {e_mkdir}"
+            logger.exception(msg)
+            raise OSError(msg) from e_mkdir
+
+        logger.info(
+            f"Connecting asynchronously to DuckDB at {db_file_path} (read_only={self.read_only})",
+        )
+        if self.read_only and not db_file_path.exists():
+            msg = (
+                f"Database file {db_file_path} does not exist. Cannot create read-only connection."
+            )
+            logger.error(msg)
+            raise FileNotFoundError(msg)
+        try:
+            # Use async_connect_with_retry for better handling of lock conflicts
+            self.conn = await async_connect_with_retry(read_only=self.read_only)
+            self._load_extensions(self.conn)
+        except duckdb.Error:
+            logger.exception(f"Failed to connect to DuckDB at {db_file_path}")
+            self.conn = None
+            raise
+        except Exception as e_other:  # pragma: no cover
+            logger.exception(
+                f"An unexpected error occurred connecting to DuckDB at {db_file_path}: {e_other}",
+            )
+            self.conn = None
+            raise
+        else:
+            return self.conn
+
+    async def async_ensure_connection(self) -> duckdb.DuckDBPyConnection:
+        """Asynchronously ensure an active database connection exists, creating one if necessary.
+
+        Returns:
+            duckdb.DuckDBPyConnection: An active DuckDB connection object.
+
+        """
+        if self.conn is not None:
             try:
-                if self.transaction_active:
-                    try:
-                        self.conn.rollback()
-                        logger.info("Active transaction rolled back during close.")
-                    except duckdb.Error as e_rollback:
-                        logger.warning(
-                            f"Error during DuckDB rollback on close: {e_rollback}",
-                        )
-                    except Exception as e_generic_rollback:  # pragma: no cover # noqa: BLE001
-                        logger.warning(
-                            f"Generic error during rollback on close: {e_generic_rollback}",
-                        )
-                    finally:
-                        self.transaction_active = False
-                self.conn.close()
-                logger.info("DuckDB connection closed.")
-            except duckdb.Error as e_db_close:
-                logger.warning(f"DuckDB error closing connection: {e_db_close}")
-            except Exception as e_generic_close:  # pragma: no cover # noqa: BLE001
+                self.conn.execute("SELECT 1").fetchone()
+            except (duckdb.Error, AttributeError) as e:
                 logger.warning(
-                    f"Generic error closing connection: {e_generic_close}",
+                    f"Existing connection is not usable ({e}), attempting to reconnect.",
                 )
-            finally:
                 self.conn = None
+            else:
+                return self.conn  # Connection is alive and usable
+
+        return await self.async_connect()
 
     def ensure_connection(self) -> duckdb.DuckDBPyConnection:
         """Ensure an active database connection exists, creating one if necessary.
@@ -181,45 +388,75 @@ class DuckDBConnectionManager:
                 )
                 self.conn = None
             else:
-                return self.conn  # Connection is alive and usable (TRY300 fixed)
+                return self.conn  # Connection is alive and usable
 
         return self.connect()
 
+    def close(self) -> None:
+        """Close the database connection.
+
+        This also rolls back any active transaction before closing.
+
+        Note:
+            After closing, the connection cannot be used anymore.
+            To get a new connection, use connect() again.
+        """
+        if self.conn is None:
+            return  # Already closed
+
+        try:
+            # Roll back any active transaction before closing
+            if self._transaction_active:
+                try:
+                    self.rollback()
+                except Exception as e:
+                    logger.warning(f"Error rolling back transaction during close: {e}")
+
+            # Close the connection - this releases any locks
+            self.conn.close()
+            logger.info("DuckDB connection closed.")
+        except Exception as e:
+            logger.error(f"Error while closing database connection: {e}")
+        finally:
+            # Always set conn to None to prevent reuse of closed connection
+            self.conn = None
+            self._transaction_active = False
+
     def begin_transaction(self) -> None:
         """Begin a database transaction if one is not already active."""
-        if self.transaction_active:
+        if self._transaction_active:
             logger.warning("Transaction already active, not beginning a new one.")
             return
         conn = self.ensure_connection()
         conn.execute("BEGIN TRANSACTION")
-        self.transaction_active = True
+        self._transaction_active = True
         logger.debug("Began new database transaction.")
 
     def commit(self) -> None:
         """Commit the current active transaction."""
-        if not self.transaction_active:
+        if not self._transaction_active:
             logger.warning("No active transaction to commit.")
             return
         if self.conn:
             self.conn.commit()
-            self.transaction_active = False
+            self._transaction_active = False
             logger.debug("Database transaction committed.")
         else:  # pragma: no cover
             logger.warning("Commit called but no active or open connection.")
-            self.transaction_active = False
+            self._transaction_active = False
 
     def rollback(self) -> None:
         """Roll back the current active transaction."""
-        if not self.transaction_active:
+        if not self._transaction_active:
             logger.warning("No active transaction to rollback.")
             return
         if self.conn:
             self.conn.rollback()
-            self.transaction_active = False
+            self._transaction_active = False
             logger.debug("Database transaction rolled back.")
         else:  # pragma: no cover
             logger.warning("Rollback called but no active or open connection.")
-            self.transaction_active = False
+            self._transaction_active = False
 
     def _create_fts_objects(self, conn: duckdb.DuckDBPyConnection) -> None:
         """Create FTS related table, function and triggers."""
@@ -508,6 +745,29 @@ class DuckDBConnectionManager:
             self.ensure_vss_extension()
         logger.info("DuckDBConnectionManager initialization complete.")
 
+    async def async_initialize(self) -> None:
+        """Asynchronously initialize the database: creates directory, tables, and extensions.
+
+        This is the main async setup method to ensure the database is ready for use.
+        No-op if in read-only mode, except for directory creation.
+        """
+        logger.info(
+            f"Asynchronously initializing DuckDBConnectionManager (read_only={self.read_only})...",
+        )
+        db_dir = pathlib.Path(DUCKDB_PATH).parent
+        try:
+            db_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e_mkdir:  # pragma: no cover
+            msg = f"Failed to create database directory {db_dir}: {e_mkdir}"
+            logger.exception(msg)
+            raise OSError(msg) from e_mkdir
+
+        if not self.read_only:
+            await self.async_ensure_connection()
+            self.ensure_tables()  # These methods are not async but they're fast
+            self.ensure_vss_extension()
+        logger.info("DuckDBConnectionManager async initialization complete.")
+
     def __enter__(self) -> "DuckDBConnectionManager":
         """Enter the runtime context related to this object. Ensures connection."""
         self.ensure_connection()
@@ -523,7 +783,7 @@ class DuckDBConnectionManager:
 
         Rolls back active transaction if an exception occurred within the context.
         """
-        if exc_type and self.transaction_active:
+        if exc_type and self._transaction_active:
             exception_name = exc_type.__name__ if exc_type else "UnknownException"
             logger.warning(
                 f"Exception '{exception_name}' occurred in context, "
@@ -531,3 +791,62 @@ class DuckDBConnectionManager:
             )
             self.rollback()
         self.close()
+
+    async def __aenter__(self) -> "DuckDBConnectionManager":
+        """Enter the async runtime context related to this object. Ensures connection asynchronously."""
+        await self.async_ensure_connection()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """Exit the async runtime context related to this object. Closes connection.
+
+        Rolls back active transaction if an exception occurred within the context.
+        """
+        if exc_type and self._transaction_active:
+            exception_name = exc_type.__name__ if exc_type else "UnknownException"
+            logger.warning(
+                f"Exception '{exception_name}' occurred in async context, "
+                "rolling back active transaction.",
+            )
+            self.rollback()
+        self.close()
+
+    @property
+    def transaction_active(self) -> bool:
+        """Whether there's currently an active transaction.
+
+        Returns:
+            bool: True if a transaction is active, False otherwise.
+        """
+        return self._transaction_active
+
+    def checkpoint_database(self) -> bool:
+        """Perform a checkpoint operation on the database.
+
+        This forces writing all changes from the WAL to the main database file
+        and truncates the WAL file. This can be used to ensure database consistency
+        before copying the database file.
+
+        Returns:
+            bool: True if checkpoint was successful, False otherwise.
+        """
+        if self.read_only:
+            logger.warning("Cannot checkpoint a read-only database.")
+            return False
+
+        try:
+            conn = self.ensure_connection()
+            logger.info("Performing database checkpoint...")
+
+            # DuckDB uses force_checkpoint instead of wal_checkpoint
+            conn.execute("PRAGMA force_checkpoint")
+            logger.info("Checkpoint completed successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Error during database checkpoint: {e}")
+            return False

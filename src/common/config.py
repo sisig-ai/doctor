@@ -16,9 +16,12 @@ REDIS_URI = os.getenv("REDIS_URI", "redis://localhost:6379")
 # DuckDB settings
 DATA_DIR = os.getenv("DATA_DIR", "data")
 DUCKDB_PATH = os.path.join(DATA_DIR, "doctor.duckdb")
+DUCKDB_READ_PATH = os.path.join(DATA_DIR, "doctor.read.duckdb")  # Read-only copy for web service
+DUCKDB_WRITE_PATH = os.path.join(DATA_DIR, "doctor.write.duckdb")  # Read-write copy for crawler
 DUCKDB_EMBEDDINGS_TABLE = "document_embeddings"
 DB_RETRY_ATTEMPTS = int(os.getenv("DB_RETRY_ATTEMPTS", "5"))
 DB_RETRY_DELAY_SEC = float(os.getenv("DB_RETRY_DELAY_SEC", "0.5"))
+DB_SYNC_INTERVAL_SEC = int(os.getenv("DB_SYNC_INTERVAL_SEC", "10"))  # Seconds between syncs
 
 # OpenAI settings
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

@@ -11,13 +11,13 @@ from src.common.config import REDIS_URI
 from src.common.logger import get_logger
 from src.common.processor import process_page_batch
 from src.lib.crawler import crawl_url
-from src.lib.database import Database
+from src.lib.database import Database, get_connection, BatchJobUpdate, BatchExecutor
 
 # Get logger for this module
 logger = get_logger(__name__)
 
 
-def create_job(
+async def create_job(
     url: str,
     job_id: str,
     tags: list[str] | None = None,
@@ -39,50 +39,50 @@ def create_job(
         tags = []
 
     logger.info(f"Creating new job {job_id} for URL: {url}, max pages: {max_pages}")
-
-    # Create job record in DuckDB
-    db = Database()
     now = datetime.datetime.now()
 
     try:
-        # Insert into DuckDB
-        logger.info(f"Inserting job {job_id} into DuckDB")
-        db.connect()
-        db.db.begin_transaction()
-        db.conn.execute(
-            """
-            INSERT INTO jobs (
-                job_id, start_url, status, pages_discovered, pages_crawled,
-                max_pages, tags, created_at, updated_at
+        # Get a connection from the pool (read-write)
+        async with await get_connection(read_only=False) as conn_manager:
+            # Insert into DuckDB
+            logger.info(f"Inserting job {job_id} into DuckDB")
+            conn = await conn_manager.async_ensure_connection()
+            conn_manager.begin_transaction()
+
+            conn.execute(
+                """
+                INSERT INTO jobs (
+                    job_id, start_url, status, pages_discovered, pages_crawled,
+                    max_pages, tags, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    str(url),
+                    "pending",
+                    0,
+                    0,
+                    max_pages,
+                    Database.serialize_tags(tags),
+                    now,
+                    now,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                job_id,
-                str(url),
-                "pending",
-                0,
-                0,
-                max_pages,
-                Database.serialize_tags(tags),
-                now,
-                now,
-            ),
-        )
-        # Ensure the changes are written to disk
-        db.db.commit()
+            # Commit the transaction
+            conn_manager.commit()
 
-        # Force a checkpoint to ensure changes are persisted
-        db.conn.execute("CHECKPOINT")
+            # Ensure changes are persisted with a checkpoint
+            conn.execute("CHECKPOINT")
 
-        # Verify the job was created by reading it back
-        job_record = db.conn.execute(
-            "SELECT job_id FROM jobs WHERE job_id = ?",
-            (job_id,),
-        ).fetchone()
-        if not job_record:
-            logger.error(f"Job {job_id} was not successfully created in the database!")
-            raise Exception(f"Failed to create job {job_id} in the database")
+            # Verify the job was created by reading it back
+            job_record = conn.execute(
+                "SELECT job_id FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if not job_record:
+                logger.error(f"Job {job_id} was not successfully created in the database!")
+                raise Exception(f"Failed to create job {job_id} in the database")
 
         logger.info(f"Successfully created job {job_id} in DuckDB")
 
@@ -107,8 +107,6 @@ def create_job(
     except Exception as e:
         logger.exception(f"Error creating job for URL {url}: {e!s}")
         raise
-    finally:
-        db.close()
 
 
 def perform_crawl(
@@ -134,17 +132,23 @@ def perform_crawl(
 
     logger.info(f"Starting crawl job {job_id} for URL: {url}, max pages: {max_pages}")
 
-    # Update job status to running
-    with Database() as db:
-        db.update_job_status(job_id, "running")
+    # Update job status to running using batch operations
+    batch_update = BatchJobUpdate()
+    batch_update.add_job_update(job_id, "running")
+    executor = BatchExecutor()
+
+    # Use asyncio.run to execute the async batch operation in a sync context
+    asyncio.run(executor.execute_batch(batch_update))
 
     try:
         # Run the crawl and processing pipeline
         result = asyncio.run(_execute_pipeline(job_id, url, tags, max_pages))
 
         # Update job status to completed
-        with Database() as db:
-            db.update_job_status(job_id, "completed")
+        batch_update = BatchJobUpdate()
+        batch_update.add_job_update(job_id, "completed")
+        executor = BatchExecutor(checkpoint_after=True)
+        asyncio.run(executor.execute_batch(batch_update))
 
         logger.info(f"Completed crawl job {job_id}: {result}")
         return result
@@ -153,8 +157,10 @@ def perform_crawl(
         logger.exception(f"Error in crawl job {job_id}: {e!s}")
 
         # Update job status to failed
-        with Database() as db:
-            db.update_job_status(job_id, "failed", error_message=str(e))
+        batch_update = BatchJobUpdate()
+        batch_update.add_job_update(job_id, "failed", error_message=str(e))
+        executor = BatchExecutor(checkpoint_after=True)
+        asyncio.run(executor.execute_batch(batch_update))
 
         return {"job_id": job_id, "status": "failed", "error": str(e)}
 
@@ -179,36 +185,39 @@ async def _execute_pipeline(
     """
     logger.info(f"Job {job_id}: Starting pipeline for URL: {url} with max_pages={max_pages}")
 
-    # Update job status to indicate crawling has started
-    with Database() as db:
-        db.update_job_status(
-            job_id=job_id,
-            status="running",
-            pages_discovered=0,
-            pages_crawled=0,
-        )
+    # Update job status using batch operations
+    batch_update = BatchJobUpdate()
+    batch_update.add_job_update(
+        job_id=job_id,
+        status="running",
+        pages_discovered=0,
+        pages_crawled=0,
+    )
+    executor = BatchExecutor()
+    await executor.execute_batch(batch_update)
 
-    # Step 1: Crawl the URL
+    # Step 1: Crawl the URL - this doesn't require database connections
     logger.info(f"Job {job_id}: Beginning crawling phase from URL: {url}")
     crawl_results = await crawl_url(url, max_pages=max_pages)
     pages_discovered = len(crawl_results)
 
     logger.info(f"Job {job_id}: Crawl discovered {pages_discovered} pages")
 
-    # Update job progress after crawl phase
-    with Database() as db:
-        db.update_job_status(
-            job_id=job_id,
-            status="running",
-            pages_discovered=pages_discovered,
-            pages_crawled=0,
-        )
+    # Update job progress after crawl phase using batch operations
+    batch_update = BatchJobUpdate()
+    batch_update.add_job_update(
+        job_id=job_id,
+        status="running",
+        pages_discovered=pages_discovered,
+        pages_crawled=0,
+    )
+    await executor.execute_batch(batch_update)
 
     # Step 2: Process the crawled pages
     if crawl_results:
         logger.info(f"Job {job_id}: Beginning processing phase for {pages_discovered} pages")
 
-        # Process the pages in batches
+        # Process the pages using batch operations
         processed_page_ids = await process_page_batch(
             page_results=crawl_results,
             job_id=job_id,
@@ -221,26 +230,28 @@ async def _execute_pipeline(
         )
 
         # Final update before completing
-        with Database() as db:
-            db.update_job_status(
-                job_id=job_id,
-                status="running",
-                pages_discovered=pages_discovered,
-                pages_crawled=pages_crawled,
-            )
+        batch_update = BatchJobUpdate()
+        batch_update.add_job_update(
+            job_id=job_id,
+            status="running",
+            pages_discovered=pages_discovered,
+            pages_crawled=pages_crawled,
+        )
+        await executor.execute_batch(batch_update)
     else:
         logger.warning(f"Job {job_id}: No pages were discovered during crawl")
         pages_crawled = 0
 
         # Update status for empty crawl
-        with Database() as db:
-            db.update_job_status(
-                job_id=job_id,
-                status="running",
-                pages_discovered=0,
-                pages_crawled=0,
-                error_message="No pages were discovered during crawl",
-            )
+        batch_update = BatchJobUpdate()
+        batch_update.add_job_update(
+            job_id=job_id,
+            status="running",
+            pages_discovered=0,
+            pages_crawled=0,
+            error_message="No pages were discovered during crawl",
+        )
+        await executor.execute_batch(batch_update)
 
     # Return final status
     logger.info(
@@ -276,13 +287,10 @@ def delete_docs(
         f"Starting delete task {task_id} with filters: tags={tags}, domain={domain}, page_ids={page_ids}",
     )
 
-    # Get a database instance with write access
-    db = Database(read_only=False)
-    db.connect()
-    db.db.begin_transaction()
-
-    try:
-        # Build the SQL where clause based on filters
+    # Use asyncio.run to execute async operations in a sync context
+    async def delete_async():
+        # Build the SQL where clause and parameters outside connection scope
+        # to minimize connection time
         conditions = []
         params = []
 
@@ -306,30 +314,45 @@ def delete_docs(
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-        # Get the IDs of pages that will be deleted
-        query = f"SELECT id FROM pages WHERE {where_clause}"
-        logger.debug(f"Executing query to get page IDs: {query}")
-        results = db.conn.execute(query, params).fetchall()
-        page_ids_to_delete = [row[0] for row in results]
+        # Only acquire connection when ready to execute query
+        async with await get_connection(read_only=False) as conn_manager:
+            conn = await conn_manager.async_ensure_connection()
+            conn_manager.begin_transaction()
 
-        # Then delete from SQL database
-        delete_query = f"DELETE FROM pages WHERE {where_clause}"
-        logger.debug(f"Executing delete query: {delete_query}")
-        cursor = db.conn.execute(delete_query, params)
-        deleted_pages = cursor.rowcount
+            try:
+                # Get the IDs of pages that will be deleted
+                query = f"SELECT id FROM pages WHERE {where_clause}"
+                logger.debug(f"Executing query to get page IDs: {query}")
+                results = conn.execute(query, params).fetchall()
+                page_ids_to_delete = [row[0] for row in results]
 
-        # Commit the changes
-        db.db.commit()
+                # Then delete from SQL database
+                delete_query = f"DELETE FROM pages WHERE {where_clause}"
+                logger.debug(f"Executing delete query: {delete_query}")
+                cursor = conn.execute(delete_query, params)
+                deleted_pages = cursor.rowcount
 
-        logger.info(f"Deleted {deleted_pages} pages ")
+                # Commit the changes
+                conn_manager.commit()
 
-        return {
-            "task_id": task_id,
-            "deleted_pages": deleted_pages,
-            "page_ids": page_ids_to_delete,
-        }
+                # Force a checkpoint for durability
+                conn.execute("CHECKPOINT")
+
+                logger.info(f"Deleted {deleted_pages} pages ")
+
+                return {
+                    "task_id": task_id,
+                    "deleted_pages": deleted_pages,
+                    "page_ids": page_ids_to_delete,
+                }
+            except Exception as e:
+                conn_manager.rollback()
+                logger.error(f"Error deleting documents: {e!s}")
+                raise
+
+    try:
+        result = asyncio.run(delete_async())
+        return result
     except Exception as e:
-        logger.error(f"Error deleting documents: {e!s}")
+        logger.error(f"Error in delete_docs: {e!s}")
         raise
-    finally:
-        db.close()

@@ -7,14 +7,18 @@ from typing import Any
 import duckdb
 
 from src.common.config import DUCKDB_EMBEDDINGS_TABLE, VECTOR_SIZE
-from src.lib.database import Database
+from src.lib.database import get_connection
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 
 class VectorIndexer:
-    """Class for indexing vectors and payloads in DuckDB."""
+    """Class for indexing vectors and payloads in DuckDB.
+
+    This class provides methods for indexing and searching vector embeddings
+    using DuckDB's VSS (Vector Similarity Search) extension.
+    """
 
     def __init__(
         self,
@@ -25,38 +29,21 @@ class VectorIndexer:
 
         Args:
             table_name: Name of the DuckDB table to use (defaults to config value)
-            connection: Optional DuckDB connection to use (creates a new one if not provided)
+            connection: DEPRECATED - External connections are no longer supported.
+                        This parameter is kept for backward compatibility only.
 
+        Note:
+            The class now uses the connection pool exclusively for optimal connection management.
         """
-        self._own_connection = connection is None
         if connection is not None:
-            self.conn = connection
-        else:
-            db = Database()
-            self.conn = db.connect()
+            logger.warning(
+                "Providing an external connection to VectorIndexer is deprecated. "
+                "The connection pool will be used regardless."
+            )
 
-        # Ensure VSS extension is installed and loaded
-        try:
-            self.conn.execute("INSTALL vss;")
-            logger.debug("VSS extension installed")
-        except Exception as e:
-            # If extension is already installed, this will fail, but that's okay
-            logger.debug(f"VSS extension installation attempt: {e!s}")
-
-        self.conn.execute("LOAD vss;")
-        logger.debug("VSS extension loaded")
-
+        # Don't store the external connection anymore - always use the pool
         self.table_name = table_name or DUCKDB_EMBEDDINGS_TABLE
         logger.debug(f"Initialized VectorIndexer with table={self.table_name}")
-
-    def __del__(self):
-        """Clean up resources on destruction."""
-        if hasattr(self, "_own_connection") and self._own_connection and hasattr(self, "conn"):
-            try:
-                self.conn.close()
-                logger.debug("Closed DuckDB connection in VectorIndexer destructor")
-            except Exception:
-                pass
 
     async def index_vector(
         self,
@@ -89,48 +76,58 @@ class VectorIndexer:
 
         logger.debug(f"Indexing vector of dimension {len(vector)} with point_id={point_id}")
 
-        try:
-            # First check if the table exists
+        # Prepare payload data outside of connection context
+        text_chunk = payload.get("text", "")
+        page_id = payload.get("page_id", "")
+        url = payload.get("url", "")
+        domain = payload.get("domain", "")
+        tags = payload.get("tags", [])
+        job_id = payload.get("job_id", "")
+
+        # Use connection pooling with context manager - only acquire when ready to execute query
+        async with await get_connection(read_only=False) as conn_manager:
+            conn = await conn_manager.async_ensure_connection()
+
             try:
-                table_exists = self.conn.execute(
-                    f"SELECT count(*) FROM information_schema.tables WHERE table_name = '{self.table_name}'",
-                ).fetchone()[0]
+                # Ensure VSS extension is loaded
+                try:
+                    conn.execute("LOAD vss;")
+                except Exception as e:
+                    logger.debug(f"VSS extension load attempt: {e!s}")
 
-                if not table_exists:
-                    logger.error(
-                        f"Table '{self.table_name}' does not exist. Ensure database setup is complete.",
-                    )
-                    raise Exception(
-                        f"Table '{self.table_name}' does not exist. Run database initialization first.",
-                    )
-            except Exception as check_err:
-                logger.error(f"Error checking if table exists: {check_err!s}")
+                # First check if the table exists
+                try:
+                    table_exists = conn.execute(
+                        f"SELECT count(*) FROM information_schema.tables WHERE table_name = '{self.table_name}'",
+                    ).fetchone()[0]
+
+                    if not table_exists:
+                        logger.error(
+                            f"Table '{self.table_name}' does not exist. Ensure database setup is complete.",
+                        )
+                        raise Exception(
+                            f"Table '{self.table_name}' does not exist. Run database initialization first.",
+                        )
+                except Exception as check_err:
+                    logger.error(f"Error checking if table exists: {check_err!s}")
+                    raise
+
+                # Insert the vector and payload into the table
+                conn.execute(
+                    f"""
+                    INSERT INTO {self.table_name}
+                    (id, embedding, text_chunk, page_id, url, domain, tags, job_id)
+                    VALUES (?::VARCHAR, ?::FLOAT4[{VECTOR_SIZE}], ?, ?, ?, ?, ?::VARCHAR[], ?)
+                    """,
+                    (point_id, vector, text_chunk, page_id, url, domain, tags, job_id),
+                )
+
+                logger.debug(f"Successfully indexed point {point_id}")
+                return point_id
+
+            except Exception as e:
+                logger.error(f"Error indexing vector: {e!s}")
                 raise
-
-            # Extract payload fields
-            text_chunk = payload.get("text", "")
-            page_id = payload.get("page_id", "")
-            url = payload.get("url", "")
-            domain = payload.get("domain", "")
-            tags = payload.get("tags", [])
-            job_id = payload.get("job_id", "")
-
-            # Insert the vector and payload into the table
-            self.conn.execute(
-                f"""
-                INSERT INTO {self.table_name}
-                (id, embedding, text_chunk, page_id, url, domain, tags, job_id)
-                VALUES (?::VARCHAR, ?::FLOAT4[{VECTOR_SIZE}], ?, ?, ?, ?, ?::VARCHAR[], ?)
-                """,
-                (point_id, vector, text_chunk, page_id, url, domain, tags, job_id),
-            )
-
-            logger.debug(f"Successfully indexed point {point_id}")
-            return point_id
-
-        except Exception as e:
-            logger.error(f"Error indexing vector: {e!s}")
-            raise
 
     async def index_batch(
         self,
@@ -166,45 +163,55 @@ class VectorIndexer:
 
         logger.debug(f"Indexing batch of {len(vectors)} vectors")
 
-        try:
-            # Prepare batch data for insertion
-            batch_data = []
-            for i, (point_id, vector, payload) in enumerate(
-                zip(point_ids, vectors, payloads, strict=False)
-            ):
-                if len(vector) != VECTOR_SIZE:
-                    logger.error(
-                        f"Vector {i} dimension mismatch: expected {VECTOR_SIZE}, got {len(vector)}",
-                    )
-                    raise ValueError(f"Vector dimension must be {VECTOR_SIZE}")
-
-                text_chunk = payload.get("text", "")
-                page_id = payload.get("page_id", "")
-                url = payload.get("url", "")
-                domain = payload.get("domain", "")
-                tags = payload.get("tags", [])
-                job_id = payload.get("job_id", "")
-
-                batch_data.append(
-                    (point_id, vector, text_chunk, page_id, url, domain, tags, job_id),
+        # Prepare batch data for insertion outside of the connection context
+        batch_data = []
+        for i, (point_id, vector, payload) in enumerate(
+            zip(point_ids, vectors, payloads, strict=False)
+        ):
+            if len(vector) != VECTOR_SIZE:
+                logger.error(
+                    f"Vector {i} dimension mismatch: expected {VECTOR_SIZE}, got {len(vector)}",
                 )
+                raise ValueError(f"Vector dimension must be {VECTOR_SIZE}")
 
-            # Use executemany for efficient batch insertion
-            self.conn.executemany(
-                f"""
-                INSERT INTO {self.table_name}
-                (id, embedding, text_chunk, page_id, url, domain, tags, job_id)
-                VALUES (?::VARCHAR, ?::FLOAT4[{VECTOR_SIZE}], ?, ?, ?, ?, ?::VARCHAR[], ?)
-                """,
-                batch_data,
+            text_chunk = payload.get("text", "")
+            page_id = payload.get("page_id", "")
+            url = payload.get("url", "")
+            domain = payload.get("domain", "")
+            tags = payload.get("tags", [])
+            job_id = payload.get("job_id", "")
+
+            batch_data.append(
+                (point_id, vector, text_chunk, page_id, url, domain, tags, job_id),
             )
 
-            logger.debug(f"Successfully indexed batch of {len(batch_data)} points")
-            return point_ids
+        # Use connection pooling with context manager - only acquire when ready to execute query
+        async with await get_connection(read_only=False) as conn_manager:
+            conn = await conn_manager.async_ensure_connection()
 
-        except Exception as e:
-            logger.error(f"Error indexing vector batch: {e!s}")
-            raise
+            try:
+                # Ensure VSS extension is loaded
+                try:
+                    conn.execute("LOAD vss;")
+                except Exception as e:
+                    logger.debug(f"VSS extension load attempt: {e!s}")
+
+                # Use executemany for efficient batch insertion
+                conn.executemany(
+                    f"""
+                    INSERT INTO {self.table_name}
+                    (id, embedding, text_chunk, page_id, url, domain, tags, job_id)
+                    VALUES (?::VARCHAR, ?::FLOAT4[{VECTOR_SIZE}], ?, ?, ?, ?, ?::VARCHAR[], ?)
+                    """,
+                    batch_data,
+                )
+
+                logger.debug(f"Successfully indexed batch of {len(batch_data)} points")
+                return point_ids
+
+            except Exception as e:
+                logger.error(f"Error indexing vector batch: {e!s}")
+                raise
 
     async def search(
         self,
@@ -225,68 +232,78 @@ class VectorIndexer:
         """
         logger.debug(f"Searching for similar vectors with limit={limit}")
 
-        try:
-            # Build the SQL query with optional tag filtering
-            query = f"""
-            SELECT
-                id,
-                text_chunk,
-                page_id,
-                url,
-                domain,
-                tags,
-                job_id,
-                array_cosine_distance(embedding, ?::FLOAT[{VECTOR_SIZE}]) AS cosine_distance
-            FROM {self.table_name}
-            """
+        # Prepare query and parameters outside the connection context
+        query = f"""
+        SELECT
+            id,
+            text_chunk,
+            page_id,
+            url,
+            domain,
+            tags,
+            job_id,
+            array_cosine_distance(embedding, ?::FLOAT[{VECTOR_SIZE}]) AS cosine_distance
+        FROM {self.table_name}
+        """
 
-            params = [query_vector]
+        params = [query_vector]
 
-            # Add tag filtering if present in filter_payload
-            if filter_payload and "must" in filter_payload:
-                for condition in filter_payload["must"]:
-                    if condition.get("key") == "tags" and condition.get("match", {}).get("any"):
-                        tag_list = condition["match"]["any"]
-                        if tag_list:
-                            query += " WHERE array_has_any(tags, ?::VARCHAR[])"
-                            params.append(tag_list)
-                            logger.debug(f"Added tag filter: {tag_list}")
-                            break
+        # Add tag filtering if present in filter_payload
+        if filter_payload and "must" in filter_payload:
+            for condition in filter_payload["must"]:
+                if condition.get("key") == "tags" and condition.get("match", {}).get("any"):
+                    tag_list = condition["match"]["any"]
+                    if tag_list:
+                        query += " WHERE array_has_any(tags, ?::VARCHAR[])"
+                        params.append(tag_list)
+                        logger.debug(f"Added tag filter: {tag_list}")
+                        break
 
-            # Add ordering and limit
-            query += " ORDER BY cosine_distance ASC LIMIT ?"
-            params.append(limit)
+        # Add ordering and limit
+        query += " ORDER BY cosine_distance ASC LIMIT ?"
+        params.append(limit)
 
-            # Execute the query
-            result = self.conn.execute(query, params).fetchall()
-            logger.debug(f"Search returned {len(result)} results")
+        # Use connection pooling with context manager - only acquire when ready to execute query
+        async with await get_connection(read_only=True) as conn_manager:
+            conn = await conn_manager.async_ensure_connection()
 
-            # Format results to match the expected structure
-            search_results = []
-            for row in result:
-                id, text_chunk, page_id, url, domain, tags, job_id, distance = row
+            try:
+                # Ensure VSS extension is loaded
+                try:
+                    conn.execute("LOAD vss;")
+                except Exception as e:
+                    logger.debug(f"VSS extension load attempt: {e!s}")
 
-                # Convert cosine distance to similarity score (1 - distance)
-                # This matches Qdrant's convention where higher scores are better
-                similarity_score = 1.0 - float(distance)
+                # Execute the query
+                result = conn.execute(query, params).fetchall()
+                logger.debug(f"Search returned {len(result)} results")
 
-                search_results.append(
-                    {
-                        "id": id,
-                        "score": similarity_score,
-                        "payload": {
-                            "text": text_chunk,
-                            "page_id": page_id,
-                            "url": url,
-                            "domain": domain,
-                            "tags": tags,
-                            "job_id": job_id,
+                # Format results to match the expected structure
+                search_results = []
+                for row in result:
+                    id, text_chunk, page_id, url, domain, tags, job_id, distance = row
+
+                    # Convert cosine distance to similarity score (1 - distance)
+                    # This matches Qdrant's convention where higher scores are better
+                    similarity_score = 1.0 - float(distance)
+
+                    search_results.append(
+                        {
+                            "id": id,
+                            "score": similarity_score,
+                            "payload": {
+                                "text": text_chunk,
+                                "page_id": page_id,
+                                "url": url,
+                                "domain": domain,
+                                "tags": tags,
+                                "job_id": job_id,
+                            },
                         },
-                    },
-                )
+                    )
 
-            return search_results
+                return search_results
 
-        except Exception as e:
-            logger.error(f"Error searching vectors: {e!s}")
-            raise
+            except Exception as e:
+                logger.error(f"Error searching vectors: {e!s}")
+                raise
