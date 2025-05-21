@@ -48,7 +48,7 @@ def create_job(
         # Insert into DuckDB
         logger.info(f"Inserting job {job_id} into DuckDB")
         db.connect()
-        db.begin_transaction()
+        db.db.begin_transaction()
         db.conn.execute(
             """
             INSERT INTO jobs (
@@ -70,10 +70,10 @@ def create_job(
             ),
         )
         # Ensure the changes are written to disk
-        db.commit()
+        db.db.commit()
 
         # Force a checkpoint to ensure changes are persisted
-        db.checkpoint()
+        db.conn.execute("CHECKPOINT")
 
         # Verify the job was created by reading it back
         job_record = db.conn.execute(
@@ -279,7 +279,7 @@ def delete_docs(
     # Get a database instance with write access
     db = Database(read_only=False)
     db.connect()
-    db.begin_transaction()
+    db.db.begin_transaction()
 
     try:
         # Build the SQL where clause based on filters
@@ -319,7 +319,7 @@ def delete_docs(
         deleted_pages = cursor.rowcount
 
         # Commit the changes
-        db.commit()
+        db.db.commit()
 
         logger.info(f"Deleted {deleted_pages} pages ")
 

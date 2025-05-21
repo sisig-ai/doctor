@@ -14,6 +14,7 @@ import asyncio
 import datetime
 import pathlib  # For PTH110
 import uuid
+from types import TracebackType
 from typing import Any
 from urllib.parse import urlparse
 
@@ -49,6 +50,30 @@ class DatabaseOperations:
         """
         self.db: DuckDBConnectionManager = DuckDBConnectionManager(read_only=read_only)
         self._write_lock: asyncio.Lock = asyncio.Lock()
+
+    def __enter__(self) -> "DatabaseOperations":
+        """Enter the context manager, ensuring a database connection.
+
+        Returns:
+            Self for use in a with statement.
+        """
+        self.db.ensure_connection()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """Exit the context manager, closing the database connection.
+
+        Args:
+            exc_type: The exception type if an exception was raised in the with block, else None.
+            exc_val: The exception value if an exception was raised, else None.
+            exc_tb: The exception traceback if an exception was raised, else None.
+        """
+        self.close()
 
     @staticmethod
     def serialize_tags(tags: list[str] | None) -> str:
