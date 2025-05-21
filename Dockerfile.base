@@ -13,7 +13,6 @@ RUN uv pip install --system -e .
 
 # Copy source code
 COPY src /app/src
-COPY scripts /app/scripts
 
 # Create data directory
 RUN mkdir -p /app/data
