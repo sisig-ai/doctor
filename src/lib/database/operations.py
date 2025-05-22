@@ -48,6 +48,7 @@ class DatabaseOperations:
         """
         self.db: DuckDBConnectionManager = DuckDBConnectionManager(read_only=read_only)
         self._write_lock: asyncio.Lock = asyncio.Lock()
+        self.db.initialize()  # Ensure tables and extensions are set up
 
     def __enter__(self) -> "DatabaseOperations":
         """Enter the context manager, ensuring a database connection.

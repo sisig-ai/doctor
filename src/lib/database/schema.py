@@ -4,7 +4,7 @@
 from src.common.config import VECTOR_SIZE
 
 CREATE_JOBS_TABLE_SQL = """
-CREATE OR REPLACE TABLE jobs (
+CREATE TABLE IF NOT EXISTS jobs (
     job_id VARCHAR PRIMARY KEY,
     start_url VARCHAR,
     status VARCHAR,
@@ -19,7 +19,7 @@ CREATE OR REPLACE TABLE jobs (
 """
 
 CREATE_PAGES_TABLE_SQL = """
-CREATE OR REPLACE TABLE pages (
+CREATE TABLE IF NOT EXISTS pages (
     id VARCHAR PRIMARY KEY,
     url VARCHAR,
     domain VARCHAR,
@@ -31,7 +31,7 @@ CREATE OR REPLACE TABLE pages (
 """
 
 CREATE_DOCUMENT_EMBEDDINGS_TABLE_SQL = f"""
-CREATE OR REPLACE TABLE document_embeddings (
+CREATE TABLE IF NOT EXISTS document_embeddings (
     id VARCHAR PRIMARY KEY,
     embedding FLOAT[{VECTOR_SIZE}] NOT NULL,
     text_chunk VARCHAR,

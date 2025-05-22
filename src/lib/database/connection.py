@@ -90,14 +90,47 @@ class DuckDBConnectionManager:
                 "Functionality may be impacted.",
             )
 
+    def _check_fts_exists(self, conn: duckdb.DuckDBPyConnection) -> bool:
+        """Check if FTS index exists on the pages table.
+
+        Args:
+            conn: The active DuckDB connection.
+
+        Returns:
+            bool: True if the FTS index exists, False otherwise.
+        """
+        try:
+            # Check if there's an FTS index on the pages table
+            fts_indexes = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'fts_idx_%'"
+            ).fetchall()
+            fts_index_exists = len(fts_indexes) > 0 if fts_indexes else False
+            logger.info(f"FTS index exists on 'pages' table: {fts_index_exists}")
+            return fts_index_exists
+        except Exception as e:
+            logger.warning(f"Failed to check FTS index existence: {e}")
+            return False
+
     def _load_extensions(self, conn: duckdb.DuckDBPyConnection) -> None:
         """Install (if necessary) and loads required DuckDB extensions (FTS, VSS)."""
         self._load_single_extension(conn, "fts")
-        try:
-            self.conn.execute("PRAGMA create_fts_index('pages', 'id', 'raw_text');")
-        except Exception as e:
-            if "already exists" not in str(e):
-                logger.warning("Failed to create FTS index for 'pages' table.")
+        if not self.read_only:
+            try:
+                logger.info("Creating or verifying FTS index on 'pages' table...")
+                conn.execute("PRAGMA create_fts_index('pages', 'id', 'raw_text');")
+                logger.info("FTS index on 'pages' table created/verified successfully.")
+            except Exception as e:
+                if "already exists" not in str(e):
+                    logger.warning(f"Failed to create FTS index for 'pages' table: {e}")
+                else:
+                    logger.info("FTS index already exists on 'pages' table.")
+        else:
+            fts_exists = self._check_fts_exists(conn)
+            if not fts_exists:
+                logger.warning(
+                    "FTS index not found in read-only mode. "
+                    "BM25 search may not work. Try running with read_only=False first."
+                )
         self._load_single_extension(conn, "vss")
 
     def connect(self) -> duckdb.DuckDBPyConnection:
@@ -172,6 +205,14 @@ class DuckDBConnectionManager:
                         )
                     finally:
                         self.transaction_active = False
+
+                # Force a checkpoint to ensure data is persisted before closing
+                try:
+                    self.conn.execute("CHECKPOINT")
+                    logger.info("Database checkpoint executed during close.")
+                except Exception as e_checkpoint:
+                    logger.warning(f"Error during checkpoint on close: {e_checkpoint}")
+
                 self.conn.close()
                 logger.info("DuckDB connection closed.")
             except duckdb.Error as e_db_close:
@@ -239,87 +280,11 @@ class DuckDBConnectionManager:
             logger.warning("Rollback called but no active or open connection.")
             self.transaction_active = False
 
-    def _create_fts_objects(self, conn: duckdb.DuckDBPyConnection) -> None:
-        """Create FTS related table, function and triggers."""
-        logger.info("Creating FTS table 'fts_main_pages'...")
-        conn.execute("CREATE TABLE fts_main_pages(id VARCHAR, raw_text TEXT);")
-
-        logger.info("Populating FTS table from existing 'pages' data...")
-        conn.execute("BEGIN TRANSACTION")
-        try:
-            conn.execute(
-                "INSERT INTO fts_main_pages (id, raw_text) SELECT id, raw_text FROM pages;",
-            )
-            conn.execute("COMMIT")
-            logger.info("FTS table population committed successfully.")
-        except duckdb.Error as tx_err:  # pragma: no cover
-            conn.execute("ROLLBACK")
-            logger.warning(f"Failed to populate FTS table: {tx_err}")
-
-        fts_count_result = conn.execute(
-            "SELECT COUNT(*) FROM fts_main_pages",
-        ).fetchone()
-        fts_count = fts_count_result[0] if fts_count_result else 0
-        logger.info(
-            f"FTS table 'fts_main_pages' contains {fts_count} records.",
-        )
-
-        logger.info("Creating FTS match_bm25 function...")
-        conn.execute(
-            """
-        CREATE OR REPLACE FUNCTION fts_main_pages.match_bm25(
-            doc_id VARCHAR, query VARCHAR
-        )
-        RETURNS DOUBLE AS
-        $$
-            SELECT fts_match_bm25(raw_text, query, 1.2, 0.75)
-            FROM fts_main_pages
-            WHERE id = doc_id
-        $$;
-        """,
-        )
-        logger.info("FTS match_bm25 function created/verified.")
-
-        logger.info("Ensuring FTS sync triggers for 'pages' table...")
-        trigger_exists_result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='trigger' AND name='fts_sync_pages'",
-        ).fetchone()
-        trigger_exists = trigger_exists_result is not None
-
-        if trigger_exists:
-            logger.info(
-                "FTS insert sync trigger 'fts_sync_pages' already exists.",
-            )
-        else:
-            conn.execute(
-                """
-            CREATE TRIGGER fts_sync_pages AFTER INSERT ON pages
-            BEGIN
-                INSERT INTO fts_main_pages (id, raw_text)
-                VALUES (NEW.id, NEW.raw_text);
-            END;
-            """,
-            )
-            logger.info("FTS insert sync trigger 'fts_sync_pages' created.")
-
-        conn.execute(
-            """
-        CREATE TRIGGER IF NOT EXISTS fts_delete_sync AFTER DELETE ON pages
-        BEGIN
-            DELETE FROM fts_main_pages WHERE id = OLD.id;
-        END;
-        """,
-        )
-        logger.info(
-            "FTS delete sync trigger 'fts_delete_sync' created/verified.",
-        )
-
     def ensure_tables(self) -> None:
         """Ensure all required base tables (jobs, pages) and FTS setup exist.
 
         Creates the 'jobs' and 'pages' tables.
-        Sets up the 'fts_main_pages' table for Full-Text Search, including
-        a function for BM25 matching and triggers for synchronization.
+        Sets up direct FTS indexing on the 'pages' table.
         No-op if in read-only mode.
         """
         if self.read_only:
@@ -337,27 +302,25 @@ class DuckDBConnectionManager:
 
             logger.info("Ensuring FTS setup for 'pages' table...")
             try:
-                table_exists_result = conn.execute(
-                    "SELECT COUNT(*) FROM information_schema.tables "
-                    "WHERE table_name = 'fts_main_pages'",
-                ).fetchone()
-                table_exists = table_exists_result[0] > 0 if table_exists_result else False
-
-                if not table_exists:
-                    self._create_fts_objects(conn)
-                else:
-                    logger.info(
-                        "FTS table 'fts_main_pages' already exists, ensuring triggers.",
-                    )
-                    # Still ensure triggers exist even if table exists.
-                    # The _create_fts_objects function handles this.
-                    self._create_fts_objects(conn)
-
-            except Exception as fts_err:  # pragma: no cover # noqa: BLE001
+                conn.execute("PRAGMA create_fts_index('pages', 'id', 'raw_text');")
+                logger.info("FTS index created/verified on 'pages' table.")
+                try:
+                    table_exists_result = conn.execute(
+                        "SELECT COUNT(*) FROM information_schema.tables "
+                        "WHERE table_name = 'fts_main_pages'",
+                    ).fetchone()
+                    table_exists = table_exists_result[0] > 0 if table_exists_result else False
+                    if table_exists:
+                        logger.info("Legacy 'fts_main_pages' table found, dropping it...")
+                        conn.execute("DROP TABLE IF EXISTS fts_main_pages;")
+                        logger.info("Legacy 'fts_main_pages' table dropped.")
+                except Exception as e_drop:
+                    logger.warning(f"Failed to drop legacy 'fts_main_pages' table: {e_drop}")
+            except Exception as fts_err:
                 logger.warning(
-                    f"Failed to create/verify FTS setup: {fts_err}. BM25 search may be impacted.",
+                    f"Failed to complete FTS setup steps: {fts_err}. BM25 search may be impacted.",
                 )
-        except Exception:  # pragma: no cover
+        except Exception:
             logger.exception("Failed to create/verify base DuckDB tables")
             raise
 
@@ -485,26 +448,31 @@ class DuckDBConnectionManager:
         """Initialize the database: creates directory, tables, and extensions.
 
         This is the main setup method to ensure the database is ready for use.
-        No-op if in read-only mode, except for directory creation.
+        In read-only mode, still loads extensions and attempts to create functions.
         """
         logger.info(
             f"Initializing DuckDBConnectionManager (read_only={self.read_only})...",
         )
         # The directory creation is handled by ensure_connection -> connect
-        self.ensure_connection()
+        conn = self.ensure_connection()
 
-        # Loading extensions is safe in read-only mode, so always do that
-        # We load both FTS and VSS extensions here to ensure search features work
-        try:
-            conn = self.ensure_connection()
-            self._load_extensions(conn)
-        except Exception as e:
-            logger.warning(f"Failed to load extensions in read-only mode: {e}")
+        # Always load extensions and create the BM25 function, even in read-only mode
+        self._load_single_extension(conn, "fts")
+        self._load_single_extension(conn, "vss")
 
-        # Only create tables and indexes in write mode
-        if not self.read_only:
+        # In read-only mode, check if FTS index exists to provide better diagnostics
+        if self.read_only:
+            fts_exists = self._check_fts_exists(conn)
+            if not fts_exists:
+                logger.warning(
+                    "FTS index not found in read-only mode. "
+                    "BM25 search may not work. Try running with read_only=False first."
+                )
+        else:
+            # Only create tables and indexes in write mode
             self.ensure_tables()
             self.ensure_vss_extension()
+
         logger.info("DuckDBConnectionManager initialization complete.")
 
     def __enter__(self) -> "DuckDBConnectionManager":
