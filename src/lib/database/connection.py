@@ -13,6 +13,22 @@ import duckdb
 
 from src.common.config import DATA_DIR, DUCKDB_PATH
 from src.common.logger import get_logger
+from .schema import (
+    BEGIN_TRANSACTION_SQL,
+    CHECK_EXTENSION_LOADED_SQL,
+    CHECK_FTS_INDEXES_SQL,
+    CHECK_HNSW_INDEX_SQL,
+    CHECK_TABLE_EXISTS_SQL,
+    CHECKPOINT_SQL,
+    CREATE_FTS_INDEX_SQL,
+    CREATE_HNSW_INDEX_SQL,
+    INSTALL_EXTENSION_SQL,
+    LOAD_EXTENSION_SQL,
+    SET_HNSW_PERSISTENCE_SQL,
+    TEST_CONNECTION_SQL,
+    VSS_ARRAY_TO_STRING_TEST_SQL,
+    VSS_COSINE_SIMILARITY_TEST_SQL,
+)
 
 logger = get_logger(__name__)
 
@@ -50,23 +66,21 @@ class DuckDBConnectionManager:
         """
         # Check if the extension is already loaded
         try:
-            result = conn.execute(
-                f"SELECT * FROM duckdb_loaded_extensions() WHERE name = '{ext_name}';"
-            ).fetchone()
+            result = conn.execute(CHECK_EXTENSION_LOADED_SQL.format(ext_name)).fetchone()
             if result:
-                logger.info(f"{ext_name.upper()} extension is already loaded.")
+                logger.debug(f"{ext_name.upper()} extension is already loaded.")
                 return
         except Exception:
             # If we can't check, proceed with loading
             pass
 
         try:
-            conn.execute(f"INSTALL {ext_name};")
-            logger.info(
+            conn.execute(INSTALL_EXTENSION_SQL.format(ext_name))
+            logger.debug(
                 f"{ext_name.upper()} extension installation attempted/verified.",
             )
         except duckdb.Error as e_install_db:  # More specific
-            logger.info(
+            logger.debug(
                 f"{ext_name.upper()} extension already installed or DB error during "
                 f"install, proceeding to load: {e_install_db}",
             )
@@ -77,8 +91,8 @@ class DuckDBConnectionManager:
             )
 
         try:
-            conn.execute(f"LOAD {ext_name};")
-            logger.info(f"{ext_name.upper()} extension loaded for current connection.")
+            conn.execute(LOAD_EXTENSION_SQL.format(ext_name))
+            logger.debug(f"{ext_name.upper()} extension loaded for current connection.")
         except duckdb.Error as e_load_db:  # More specific
             logger.warning(
                 f"Could not load {ext_name.upper()} extension (DB error): {e_load_db}. "
@@ -101,11 +115,9 @@ class DuckDBConnectionManager:
         """
         try:
             # Check if there's an FTS index on the pages table
-            fts_indexes = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'fts_idx_%'"
-            ).fetchall()
+            fts_indexes = conn.execute(CHECK_FTS_INDEXES_SQL).fetchall()
             fts_index_exists = len(fts_indexes) > 0 if fts_indexes else False
-            logger.info(f"FTS index exists on 'pages' table: {fts_index_exists}")
+            logger.debug(f"FTS index exists on 'pages' table: {fts_index_exists}")
             return fts_index_exists
         except Exception as e:
             logger.warning(f"Failed to check FTS index existence: {e}")
@@ -114,23 +126,6 @@ class DuckDBConnectionManager:
     def _load_extensions(self, conn: duckdb.DuckDBPyConnection) -> None:
         """Install (if necessary) and loads required DuckDB extensions (FTS, VSS)."""
         self._load_single_extension(conn, "fts")
-        if not self.read_only:
-            try:
-                logger.info("Creating or verifying FTS index on 'pages' table...")
-                conn.execute("PRAGMA create_fts_index('pages', 'id', 'raw_text');")
-                logger.info("FTS index on 'pages' table created/verified successfully.")
-            except Exception as e:
-                if "already exists" not in str(e):
-                    logger.warning(f"Failed to create FTS index for 'pages' table: {e}")
-                else:
-                    logger.info("FTS index already exists on 'pages' table.")
-        else:
-            fts_exists = self._check_fts_exists(conn)
-            if not fts_exists:
-                logger.warning(
-                    "FTS index not found in read-only mode. "
-                    "BM25 search may not work. Try running with read_only=False first."
-                )
         self._load_single_extension(conn, "vss")
 
     def connect(self) -> duckdb.DuckDBPyConnection:
@@ -157,7 +152,7 @@ class DuckDBConnectionManager:
             logger.exception(msg)
             raise OSError(msg) from e_mkdir
 
-        logger.info(
+        logger.debug(
             f"Connecting to DuckDB at {db_file_path} (read_only={self.read_only})",
         )
         if self.read_only and not db_file_path.exists():
@@ -168,7 +163,7 @@ class DuckDBConnectionManager:
             raise FileNotFoundError(msg)
         try:
             self.conn = duckdb.connect(str(db_file_path), read_only=self.read_only)
-            self.conn.execute("SELECT 1").fetchone()  # Test connection
+            self.conn.execute(TEST_CONNECTION_SQL).fetchone()  # Test connection
             self._load_extensions(self.conn)
         except duckdb.Error:
             logger.exception(f"Failed to connect to DuckDB at {db_file_path}")
@@ -194,7 +189,7 @@ class DuckDBConnectionManager:
                 if self.transaction_active:
                     try:
                         self.conn.rollback()
-                        logger.info("Active transaction rolled back during close.")
+                        logger.debug("Active transaction rolled back during close.")
                     except duckdb.Error as e_rollback:
                         logger.warning(
                             f"Error during DuckDB rollback on close: {e_rollback}",
@@ -208,13 +203,13 @@ class DuckDBConnectionManager:
 
                 # Force a checkpoint to ensure data is persisted before closing
                 try:
-                    self.conn.execute("CHECKPOINT")
-                    logger.info("Database checkpoint executed during close.")
+                    self.conn.execute(CHECKPOINT_SQL)
+                    logger.debug("Database checkpoint executed during close.")
                 except Exception as e_checkpoint:
                     logger.warning(f"Error during checkpoint on close: {e_checkpoint}")
 
                 self.conn.close()
-                logger.info("DuckDB connection closed.")
+                logger.debug("DuckDB connection closed.")
             except duckdb.Error as e_db_close:
                 logger.warning(f"DuckDB error closing connection: {e_db_close}")
             except Exception as e_generic_close:  # pragma: no cover # noqa: BLE001
@@ -233,7 +228,7 @@ class DuckDBConnectionManager:
         """
         if self.conn is not None:
             try:
-                self.conn.execute("SELECT 1").fetchone()
+                self.conn.execute(TEST_CONNECTION_SQL).fetchone()
             except (duckdb.Error, AttributeError) as e:
                 logger.warning(
                     f"Existing connection is not usable ({e}), attempting to reconnect.",
@@ -250,7 +245,7 @@ class DuckDBConnectionManager:
             logger.warning("Transaction already active, not beginning a new one.")
             return
         conn = self.ensure_connection()
-        conn.execute("BEGIN TRANSACTION")
+        conn.execute(BEGIN_TRANSACTION_SQL)
         self.transaction_active = True
         logger.debug("Began new database transaction.")
 
@@ -295,27 +290,15 @@ class DuckDBConnectionManager:
         from .schema import CREATE_JOBS_TABLE_SQL, CREATE_PAGES_TABLE_SQL
 
         try:
-            logger.info("Ensuring base tables (pages, jobs) exist...")
+            logger.debug("Ensuring base tables (pages, jobs) exist...")
             conn.execute(CREATE_PAGES_TABLE_SQL)
             conn.execute(CREATE_JOBS_TABLE_SQL)
-            logger.info("'pages' and 'jobs' tables created/verified.")
+            logger.debug("'pages' and 'jobs' tables created/verified.")
 
-            logger.info("Ensuring FTS setup for 'pages' table...")
+            logger.debug("Ensuring FTS setup for 'pages' table...")
             try:
-                conn.execute("PRAGMA create_fts_index('pages', 'id', 'raw_text');")
-                logger.info("FTS index created/verified on 'pages' table.")
-                try:
-                    table_exists_result = conn.execute(
-                        "SELECT COUNT(*) FROM information_schema.tables "
-                        "WHERE table_name = 'fts_main_pages'",
-                    ).fetchone()
-                    table_exists = table_exists_result[0] > 0 if table_exists_result else False
-                    if table_exists:
-                        logger.info("Legacy 'fts_main_pages' table found, dropping it...")
-                        conn.execute("DROP TABLE IF EXISTS fts_main_pages;")
-                        logger.info("Legacy 'fts_main_pages' table dropped.")
-                except Exception as e_drop:
-                    logger.warning(f"Failed to drop legacy 'fts_main_pages' table: {e_drop}")
+                conn.execute(CREATE_FTS_INDEX_SQL)
+                logger.debug("FTS index created/verified on 'pages' table.")
             except Exception as fts_err:
                 logger.warning(
                     f"Failed to complete FTS setup steps: {fts_err}. BM25 search may be impacted.",
@@ -329,31 +312,21 @@ class DuckDBConnectionManager:
         try:
             index_exists = False
             try:
-                index_exists_result = conn.execute(
-                    "SELECT count(*) FROM duckdb_indexes() "
-                    "WHERE index_name = 'hnsw_index_on_embeddings'",
-                ).fetchone()
+                index_exists_result = conn.execute(CHECK_HNSW_INDEX_SQL).fetchone()
                 index_exists = index_exists_result[0] > 0 if index_exists_result else False
             except duckdb.Error:  # More specific
-                logger.info(
+                logger.debug(
                     "'duckdb_indexes()' function not available or errored, "
                     "will attempt to create HNSW index regardless.",
                 )
 
             if index_exists:
-                logger.info(
+                logger.debug(
                     "HNSW index 'hnsw_index_on_embeddings' already exists.",
                 )
             else:
-                conn.execute(
-                    """
-                CREATE INDEX hnsw_index_on_embeddings
-                ON document_embeddings
-                USING HNSW (embedding)
-                WITH (metric = 'cosine');
-                """,
-                )
-                logger.info("HNSW index 'hnsw_index_on_embeddings' created.")
+                conn.execute(CREATE_HNSW_INDEX_SQL)
+                logger.info("Created HNSW index 'hnsw_index_on_embeddings'.")
         except Exception as e_hnsw:  # pragma: no cover # noqa: BLE001
             logger.warning(
                 f"Failed to create HNSW index: {e_hnsw}. "
@@ -376,14 +349,14 @@ class DuckDBConnectionManager:
         from .schema import CREATE_DOCUMENT_EMBEDDINGS_TABLE_SQL
 
         try:
-            logger.info("Configuring and verifying VSS extension...")
+            logger.debug("Configuring and verifying VSS extension...")
             # Check if the VSS extension is already loaded
             # Ensure VSS extension is loaded using the helper method
             self._load_single_extension(conn, "vss")
 
             try:
-                conn.execute("SET hnsw_enable_experimental_persistence = true;")
-                logger.info("Enabled experimental persistence for HNSW indexes.")
+                conn.execute(SET_HNSW_PERSISTENCE_SQL)
+                logger.debug("Enabled experimental persistence for HNSW indexes.")
             except Exception:  # pragma: no cover
                 logger.exception(
                     "Failed to enable HNSW persistence. "  # Removed {e_persist}
@@ -391,13 +364,9 @@ class DuckDBConnectionManager:
                 )
 
             try:
-                conn.execute(
-                    "SELECT array_to_string([0.1, 0.2]::FLOAT[], ', ');",
-                ).fetchone()
-                conn.execute(
-                    "SELECT list_cosine_similarity([0.1,0.2],[0.2,0.3]);",
-                ).fetchone()
-                logger.info(
+                conn.execute(VSS_ARRAY_TO_STRING_TEST_SQL).fetchone()
+                conn.execute(VSS_COSINE_SIMILARITY_TEST_SQL).fetchone()
+                logger.debug(
                     "VSS extension functionality verified "
                     "(array_to_string, list_cosine_similarity).",
                 )
@@ -407,24 +376,22 @@ class DuckDBConnectionManager:
                     "Vector search may fail.",
                 )
 
-            logger.info("Ensuring 'document_embeddings' table exists...")
+            logger.debug("Ensuring 'document_embeddings' table exists...")
             try:
                 table_exists_result = conn.execute(
-                    "SELECT count(*) FROM information_schema.tables "
-                    "WHERE table_name = 'document_embeddings'",
+                    CHECK_TABLE_EXISTS_SQL.format("document_embeddings")
                 ).fetchone()
                 table_exists = table_exists_result[0] > 0 if table_exists_result else False
 
                 if table_exists:
-                    logger.info("'document_embeddings' table already exists.")
+                    logger.debug("'document_embeddings' table already exists.")
                 else:
                     conn.execute(CREATE_DOCUMENT_EMBEDDINGS_TABLE_SQL)
-                    logger.info(
+                    logger.debug(
                         "'document_embeddings' table created successfully.",
                     )
                     verify_table_result = conn.execute(
-                        "SELECT count(*) FROM information_schema.tables "
-                        "WHERE table_name = 'document_embeddings'",
+                        CHECK_TABLE_EXISTS_SQL.format("document_embeddings")
                     ).fetchone()
                     verify_table = verify_table_result[0] > 0 if verify_table_result else False
                     if not verify_table:  # pragma: no cover
@@ -450,7 +417,7 @@ class DuckDBConnectionManager:
         This is the main setup method to ensure the database is ready for use.
         In read-only mode, still loads extensions and attempts to create functions.
         """
-        logger.info(
+        logger.debug(
             f"Initializing DuckDBConnectionManager (read_only={self.read_only})...",
         )
         # The directory creation is handled by ensure_connection -> connect
@@ -473,7 +440,7 @@ class DuckDBConnectionManager:
             self.ensure_tables()
             self.ensure_vss_extension()
 
-        logger.info("DuckDBConnectionManager initialization complete.")
+        logger.debug("DuckDBConnectionManager initialization complete.")
 
     def __enter__(self) -> "DuckDBConnectionManager":
         """Enter the runtime context related to this object. Ensures connection."""

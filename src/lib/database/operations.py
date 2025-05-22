@@ -22,6 +22,7 @@ import duckdb  # For type hinting duckdb.DuckDBPyConnection
 from src.common.logger import get_logger
 
 from .connection import DuckDBConnectionManager
+from .schema import CHECKPOINT_SQL, INSERT_PAGE_SQL, UPDATE_JOB_STATUS_BASE_SQL
 
 logger = get_logger(__name__)
 
@@ -117,8 +118,7 @@ class DatabaseOperations:
 
                 await asyncio.to_thread(
                     conn.execute,
-                    """INSERT INTO pages (id, url, domain, raw_text, crawl_date, tags, job_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    INSERT_PAGE_SQL,
                     (
                         current_page_id,
                         url,
@@ -166,7 +166,7 @@ class DatabaseOperations:
         error_message: str | None,
     ) -> tuple[str, list[Any]]:
         """Build dynamic SQL query and parameters for updating a job."""
-        query_parts = ["UPDATE jobs SET status = ?, updated_at = ?"]
+        query_parts = [UPDATE_JOB_STATUS_BASE_SQL]
         params: list[Any] = [
             status,
             datetime.datetime.now(datetime.UTC),
@@ -279,7 +279,7 @@ class DatabaseOperations:
         async with self._write_lock:
             conn = self.db.ensure_connection()
             try:
-                await asyncio.to_thread(conn.execute, "CHECKPOINT")
+                await asyncio.to_thread(conn.execute, CHECKPOINT_SQL)
                 logger.info("Database checkpoint successful.")
             except duckdb.Error:  # pragma: no cover
                 logger.exception("Failed to force database checkpoint due to DB error")
