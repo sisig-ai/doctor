@@ -249,14 +249,12 @@ async def test_get_job_count_error():
     """Test getting job count when an error occurs."""
     # Mock database connection with an error
     mock_conn = MagicMock()
-    mock_conn.execute.side_effect = Exception("Database error")
+    mock_conn.execute.side_effect = duckdb.Error("Database error")
 
     with patch("src.web_service.services.job_service.duckdb.connect", return_value=mock_conn):
-        # Call the function
-        result = await get_job_count()
+        # Call the function and assert duckdb.Error is raised
+        with pytest.raises(duckdb.Error, match="Database error"):
+            await get_job_count()
 
         # Should still close the database even with an error
         # In new implementation, we close the database, not the connection directly
-
-        # Should return -1 to indicate an error
-        assert result == -1

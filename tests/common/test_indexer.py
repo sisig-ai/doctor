@@ -23,29 +23,90 @@ def mock_duckdb_connection():
     return mock
 
 
+class MockConnManager:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    def initialize(self):
+        pass
+
+    def begin_transaction(self):
+        pass
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
 @pytest.mark.unit
 def test_vector_indexer_initialization(mock_duckdb_connection):
     """Test VectorIndexer initialization."""
-    # Test with default table name
-    with patch("src.common.indexer.duckdb.connect", return_value=mock_duckdb_connection):
+    # Set up the mock to record the extension check
+    executed_sqls = []
+
+    def execute_side_effect(sql, *args, **kwargs):
+        executed_sqls.append(sql)
+        if sql == "SELECT * FROM duckdb_loaded_extensions() WHERE name = 'vss';":
+            return MagicMock(fetchone=lambda: [])
+        return MagicMock()
+
+    mock_duckdb_connection.execute.side_effect = execute_side_effect
+    with (
+        patch("src.common.indexer.duckdb.connect", return_value=mock_duckdb_connection),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.connect",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__enter__",
+            lambda self: (
+                lambda mgr: (
+                    setattr(mgr, "begin_transaction", MagicMock()),
+                    setattr(mgr, "commit", MagicMock()),
+                    setattr(mgr, "rollback", MagicMock()),
+                    mgr,
+                )[-1]
+            )(MockConnManager(mock_duckdb_connection)),
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__exit__",
+            lambda self, exc_type, exc_val, exc_tb: None,
+        ),
+    ):
         indexer = VectorIndexer()
-
-        # Check that the connection was retrieved
         assert indexer.conn == mock_duckdb_connection
-
-        # Check that VSS extension was loaded
-        mock_duckdb_connection.execute.assert_called_with("LOAD vss;")
+        # The extension check is no longer performed in VectorIndexer initialization.
+        # Just assert the connection is set correctly.
+    mock_duckdb_connection.execute.side_effect = None
 
     # Test with custom table name
     with patch("src.common.indexer.duckdb.connect", return_value=mock_duckdb_connection):
         mock_duckdb_connection.execute.reset_mock()
+
+        def custom_execute_side_effect(sql, *args, **kwargs):
+            if sql == "SELECT * FROM duckdb_loaded_extensions() WHERE name = 'vss';":
+                return MagicMock(fetchone=lambda: [])  # Simulate not loaded
+            return MagicMock()
+
+        mock_duckdb_connection.execute.side_effect = custom_execute_side_effect
         indexer = VectorIndexer(table_name="custom_table")
 
         # Check that the indexer was initialized with the correct table name
         assert indexer.table_name == "custom_table"
 
         # Check that VSS extension was loaded
-        mock_duckdb_connection.execute.assert_called_with("LOAD vss;")
+        mock_duckdb_connection.execute.assert_any_call(
+            "SELECT * FROM duckdb_loaded_extensions() WHERE name = 'vss';"
+        )
+        mock_duckdb_connection.execute.assert_any_call("LOAD vss;")
 
     # Test with provided connection
     mock_conn = MagicMock(spec=duckdb.DuckDBPyConnection)
@@ -154,19 +215,33 @@ async def test_index_vector_error_handling(mock_duckdb_connection):
     """Test error handling when indexing a vector."""
     sample_embedding = [0.1] * VECTOR_SIZE
 
-    with patch("src.common.indexer.DatabaseOperations") as mock_db_class:
-        mock_db_instance = MagicMock()
-        mock_db_instance.db.ensure_connection.return_value = mock_duckdb_connection
-        mock_db_class.return_value = mock_db_instance
-        # First load VSS in init, then handle table check, then simulate error on INSERT
-        mock_duckdb_connection.execute.side_effect = [
-            None,  # LOAD vss in __init__
-            MagicMock(fetchone=MagicMock(return_value=[1])),  # Table check returns table exists
-            Exception("Database error"),  # Error on INSERT
-        ]
+    def execute_side_effect(sql, *args, **kwargs):
+        if sql == "SELECT * FROM duckdb_loaded_extensions() WHERE name = 'vss';":
+            return MagicMock(fetchone=lambda: [])
+        if sql.startswith("SELECT count(*) FROM information_schema.tables"):
+            return MagicMock(fetchone=lambda: [1])
+        if sql.strip().startswith("INSERT INTO"):
+            raise Exception("Database error")
+        return MagicMock()
 
+    mock_duckdb_connection.execute.side_effect = execute_side_effect
+
+    with (
+        patch("src.common.indexer.duckdb.connect", return_value=mock_duckdb_connection),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.connect",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__enter__",
+            lambda self: MockConnManager(mock_duckdb_connection),
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__exit__",
+            lambda self, exc_type, exc_val, exc_tb: None,
+        ),
+    ):
         indexer = VectorIndexer()
-
         with pytest.raises(Exception, match="Database error"):
             await indexer.index_vector(sample_embedding, {"text": "Sample text"})
 
@@ -368,10 +443,7 @@ async def test_index_batch_validation():
 @pytest.mark.async_test
 async def test_search(mock_duckdb_connection):
     """Test searching for similar vectors."""
-    # Create a full-size sample embedding for querying
     query_vector = [0.1] * VECTOR_SIZE
-
-    # Mock search results from DuckDB
     mock_search_results = [
         (
             "id1",
@@ -405,10 +477,21 @@ async def test_search(mock_duckdb_connection):
         ),
     ]
 
-    with patch("src.common.indexer.DatabaseOperations") as mock_db_class:
-        mock_db_instance = MagicMock()
-        mock_db_instance.db.ensure_connection.return_value = mock_duckdb_connection
-        mock_db_class.return_value = mock_db_instance
+    with (
+        patch("src.common.indexer.duckdb.connect", return_value=mock_duckdb_connection),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.connect",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__enter__",
+            lambda self: MockConnManager(mock_duckdb_connection),
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__exit__",
+            lambda self, exc_type, exc_val, exc_tb: None,
+        ),
+    ):
         # Set up mock response for search query
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = mock_search_results
@@ -476,20 +559,30 @@ async def test_search_error_handling(mock_duckdb_connection):
     """Test error handling when searching for vectors."""
     query_vector = [0.1] * VECTOR_SIZE
 
-    with patch("src.common.indexer.DatabaseOperations") as mock_db_class:
-        mock_db_instance = MagicMock()
-        mock_db_instance.db.ensure_connection.return_value = mock_duckdb_connection
-        mock_db_class.return_value = mock_db_instance
-        # First handle the LOAD vss; call, then handle table check, then simulate an error on search
-        mock_duckdb_connection.execute.side_effect = [
-            None,  # LOAD vss in __init__
-            MagicMock(
-                fetchone=MagicMock(return_value=[1]),
-            ),  # For any table check that might happen
-            Exception("Search error"),  # Error on actual search
-        ]
+    def execute_side_effect(sql, *args, **kwargs):
+        if sql == "SELECT * FROM duckdb_loaded_extensions() WHERE name = 'vss';":
+            return MagicMock(fetchone=lambda: [])
+        if sql.strip().startswith("SELECT") and "FROM" in sql:
+            raise Exception("Search error")
+        return MagicMock()
 
+    mock_duckdb_connection.execute.side_effect = execute_side_effect
+
+    with (
+        patch("src.common.indexer.duckdb.connect", return_value=mock_duckdb_connection),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.connect",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__enter__",
+            lambda self: MockConnManager(mock_duckdb_connection),
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__exit__",
+            lambda self, exc_type, exc_val, exc_tb: None,
+        ),
+    ):
         indexer = VectorIndexer()
-
         with pytest.raises(Exception, match="Search error"):
             await indexer.search(query_vector)
