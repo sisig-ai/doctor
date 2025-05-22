@@ -43,7 +43,13 @@ class DatabaseOperations:
     """
 
     def __init__(self) -> None:
-        """Initialize the DatabaseOperations instance."""
+        """Initialize the DatabaseOperations instance.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         self.db: DuckDBConnectionManager = DuckDBConnectionManager()
         self._write_lock: asyncio.Lock = asyncio.Lock()
         # Initialize the database (ensures tables/extensions exist)
@@ -135,7 +141,17 @@ class DatabaseOperations:
         pages_crawled: int | None,
         error_message: str | None,
     ) -> tuple[str, list[Any]]:
-        """Build dynamic SQL query and parameters for updating a job."""
+        """Build dynamic SQL query and parameters for updating a job.
+
+        Args:
+            job_id: The ID of the job to update.
+            status: The new status of the job.
+            pages_discovered: Optional number of pages discovered.
+            pages_crawled: Optional number of pages crawled.
+            error_message: Optional error message if the job failed.
+        Returns:
+            tuple[str, list[Any]]: The SQL query and parameters for updating the job.
+        """
         query_parts = [UPDATE_JOB_STATUS_BASE_SQL]
         params: list[Any] = [
             status,
@@ -234,7 +250,17 @@ class DatabaseOperations:
                         logger.info(f"Job {job_id} successfully updated to {status}.")
 
     async def _checkpoint_internal_async(self) -> None:
-        """Internal method to force a database checkpoint. Assumes lock may be held."""
+        """Internal method to force a database checkpoint. Assumes lock may be held.
+
+        Args:
+            None.
+        Returns:
+            None.
+        Raises:
+            RuntimeError: If the database connection cannot be obtained.
+            duckdb.Error: For DuckDB specific errors.
+            Exception: For other unexpected errors during the checkpoint.
+        """
         logger.debug("Attempting to force database checkpoint (internal)...")
         # This method is called from within an existing write_lock context if called
         # after a successful job update. If called directly, it needs its own context.
@@ -257,9 +283,10 @@ class DatabaseOperations:
     async def checkpoint_async(self) -> None:
         """Force a database checkpoint to ensure changes are persisted.
 
-        This operation is typically called after critical updates, such as when
-        a job status changes to "completed" or "failed".
-        This is a public method and will acquire the write lock.
+        Args:
+            None.
+        Returns:
+            None.
         """
         logger.info("Attempting to force database checkpoint (public)...")
         async with self._write_lock:

@@ -40,7 +40,13 @@ class DuckDBConnectionManager:
     """
 
     def __init__(self) -> None:
-        """Initialize the DuckDBConnectionManager."""
+        """Initialize the DuckDBConnectionManager.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         self.conn: duckdb.DuckDBPyConnection | None = None
         self.transaction_active: bool = False
 
@@ -54,7 +60,8 @@ class DuckDBConnectionManager:
         Args:
             conn: The active DuckDB connection.
             ext_name: The name of the extension to load (e.g., 'fts', 'vss').
-
+        Returns:
+            None.
         """
         # Check if the extension is already loaded
         try:
@@ -97,23 +104,26 @@ class DuckDBConnectionManager:
             )
 
     def _load_extensions(self, conn: duckdb.DuckDBPyConnection) -> None:
-        """Install (if necessary) and loads required DuckDB extensions (FTS, VSS)."""
+        """Install (if necessary) and loads required DuckDB extensions (FTS, VSS).
+
+        Args:
+            conn: The active DuckDB connection.
+        Returns:
+            None.
+        """
         self._load_single_extension(conn, "fts")
         self._load_single_extension(conn, "vss")
 
     def connect(self) -> duckdb.DuckDBPyConnection:
         """Establish and return a DuckDB connection.
 
-        Ensures the data directory exists and loads necessary extensions (FTS, VSS)
-        upon successful connection. Retries connection on failure.
-
+        Args:
+            None.
         Returns:
             duckdb.DuckDBPyConnection: An active DuckDB connection object.
-
         Raises:
             IOError: For OS-level I/O errors during directory creation.
             duckdb.Error: For DuckDB-specific connection failures after retries.
-
         """
         data_dir_path = pathlib.Path(DATA_DIR)
         db_file_path = pathlib.Path(DUCKDB_PATH)
@@ -165,8 +175,10 @@ class DuckDBConnectionManager:
     def close(self) -> None:
         """Close the database connection if it is open.
 
-        Attempts to roll back any active transaction before closing.
-        Logs any errors during rollback or close but suppresses them.
+        Args:
+            None.
+        Returns:
+            None.
         """
         if self.conn:
             try:
@@ -206,9 +218,10 @@ class DuckDBConnectionManager:
     def ensure_connection(self) -> duckdb.DuckDBPyConnection:
         """Ensure an active database connection exists, creating one if necessary.
 
+        Args:
+            None.
         Returns:
             duckdb.DuckDBPyConnection: An active DuckDB connection object.
-
         """
         if self.conn is not None:
             try:
@@ -224,7 +237,13 @@ class DuckDBConnectionManager:
         return self.connect()
 
     def begin_transaction(self) -> None:
-        """Begin a database transaction if one is not already active."""
+        """Begin a database transaction if one is not already active.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         if self.transaction_active:
             logger.warning("Transaction already active, not beginning a new one.")
             return
@@ -234,7 +253,13 @@ class DuckDBConnectionManager:
         logger.debug("Began new database transaction.")
 
     def commit(self) -> None:
-        """Commit the current active transaction."""
+        """Commit the current active transaction.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         if not self.transaction_active:
             logger.warning("No active transaction to commit.")
             return
@@ -247,7 +272,13 @@ class DuckDBConnectionManager:
             self.transaction_active = False
 
     def rollback(self) -> None:
-        """Roll back the current active transaction."""
+        """Roll back the current active transaction.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         if not self.transaction_active:
             logger.warning("No active transaction to rollback.")
             return
@@ -262,8 +293,10 @@ class DuckDBConnectionManager:
     def ensure_tables(self) -> None:
         """Ensure all required base tables (jobs, pages) and FTS setup exist.
 
-        Creates the 'jobs' and 'pages' tables.
-        Sets up direct FTS indexing on the 'pages' table.
+        Args:
+            None.
+        Returns:
+            None.
         """
         conn = self.ensure_connection()
         from .schema import CREATE_JOBS_TABLE_SQL, CREATE_PAGES_TABLE_SQL
@@ -278,7 +311,13 @@ class DuckDBConnectionManager:
             raise
 
     def _create_hnsw_index(self, conn: duckdb.DuckDBPyConnection) -> None:
-        """Create HNSW index on document_embeddings.embedding."""
+        """Create HNSW index on document_embeddings.embedding.
+
+        Args:
+            conn: The active DuckDB connection.
+        Returns:
+            None.
+        """
         try:
             index_exists = False
             try:
@@ -306,9 +345,10 @@ class DuckDBConnectionManager:
     def ensure_vss_extension(self) -> None:
         """Ensure VSS extension is functional and document_embeddings table exists with HNSW index.
 
-        Enables experimental HNSW persistence.
-        Creates the 'document_embeddings' table if it doesn't exist.
-        Creates an HNSW index on the 'embedding' column.
+        Args:
+            None.
+        Returns:
+            None.
         """
         conn = self.ensure_connection()
         from .schema import CREATE_DOCUMENT_EMBEDDINGS_TABLE_SQL
@@ -379,7 +419,10 @@ class DuckDBConnectionManager:
     def initialize(self) -> None:
         """Initialize the database: creates directory, tables, and extensions.
 
-        This is the main setup method to ensure the database is ready for use.
+        Args:
+            None.
+        Returns:
+            None.
         """
         logger.debug("Initializing DuckDBConnectionManager...")
         # The directory creation is handled by ensure_connection -> connect
@@ -396,7 +439,13 @@ class DuckDBConnectionManager:
         logger.debug("DuckDBConnectionManager initialization complete.")
 
     def __enter__(self) -> "DuckDBConnectionManager":
-        """Enter the runtime context related to this object. Ensures connection."""
+        """Enter the runtime context related to this object. Ensures connection.
+
+        Args:
+            None.
+        Returns:
+            DuckDBConnectionManager: The context manager instance.
+        """
         self.ensure_connection()
         return self
 
@@ -408,7 +457,12 @@ class DuckDBConnectionManager:
     ) -> None:
         """Exit the runtime context related to this object. Closes connection.
 
-        Rolls back active transaction if an exception occurred within the context.
+        Args:
+            exc_type: Exception type if raised in context, else None.
+            exc_val: Exception value if raised in context, else None.
+            exc_tb: Traceback if exception raised, else None.
+        Returns:
+            None.
         """
         if exc_type and self.transaction_active:
             exception_name = exc_type.__name__ if exc_type else "UnknownException"
