@@ -44,24 +44,18 @@ async def process_crawl_result(
         page_text = extract_page_text(page_result)
 
         # Store the page in the database
-        db = DatabaseOperations()
-        try:
-            page_id = await db.store_page(
-                url=page_result.url,
-                text=page_text,
-                job_id=job_id,
-                tags=tags,
-            )
-        finally:
-            db.db.close()
+        db_ops = DatabaseOperations()
+        page_id = await db_ops.store_page(  # store_page now handles its own connection
+            url=page_result.url,
+            text=page_text,
+            job_id=job_id,
+            tags=tags,
+        )
+        # No explicit close needed as store_page uses context manager internally
 
         # Initialize components
         chunker = TextChunker()
-
-        # Get a DuckDB connection for the vector indexer
-        db = DatabaseOperations()
-        duckdb_conn = db.db.ensure_connection()
-        indexer = VectorIndexer(connection=duckdb_conn)
+        indexer = VectorIndexer()  # VectorIndexer will now create and manage its own connection.
 
         # Split text into chunks
         chunks = chunker.split_text(page_text)
@@ -120,15 +114,10 @@ async def process_crawl_result(
         logger.error(f"Error processing page {page_result.url}: {e!s}")
         raise
     finally:
-        # Close the DuckDB connection if it exists
-        indexer_var = locals().get("indexer")
-        if indexer_var and hasattr(indexer_var, "conn"):
-            try:
-                # The connection will be closed by the VectorIndexer's destructor
-                # but we explicitly set _own_connection to False since we created it
-                indexer_var._own_connection = True
-            except Exception as close_error:
-                logger.warning(f"Error marking connection for closure: {close_error}")
+        # VectorIndexer now manages its own connection if instantiated without one.
+        # Its __del__ method will attempt to close its connection if self._own_connection is True.
+        # No explicit action needed here for the indexer's connection.
+        pass
 
 
 async def process_page_batch(
@@ -165,13 +154,15 @@ async def process_page_batch(
                 processed_page_ids.append(page_id)
 
                 # Update job progress
-                with DatabaseOperations() as db:
-                    await db.update_job_status(
+                db_ops_status = DatabaseOperations()
+                await (
+                    db_ops_status.update_job_status(  # update_job_status handles its own connection
                         job_id=job_id,
                         status="running",
                         pages_discovered=len(page_results),
                         pages_crawled=len(processed_page_ids),
                     )
+                )
 
             except Exception as page_error:
                 logger.error(f"Error in batch processing for {page_result.url}: {page_error!s}")

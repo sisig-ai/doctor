@@ -1,6 +1,7 @@
 """Document service for the web service."""
 
 import duckdb
+import asyncio
 
 from src.common.config import RETURN_FULL_DOCUMENT_TEXT
 from src.common.logger import get_logger
@@ -89,6 +90,173 @@ def is_fuzzy_match(s1: str, s2: str, threshold: float = 0.7) -> bool:
     return similarity >= threshold
 
 
+async def _perform_vector_search(
+    conn: duckdb.DuckDBPyConnection,
+    query: str,
+    max_results: int,
+    filter_conditions: dict | None,
+    return_full_document_text: bool,
+    hybrid_weight: float,
+) -> dict:
+    """
+    Performs a vector search for documents.
+
+    Args:
+        conn: DuckDB connection object.
+        query: The search query string.
+        max_results: The maximum number of results to fetch initially (typically `max_results * 2`).
+        filter_conditions: Payload filter conditions for the vector indexer.
+        return_full_document_text: Boolean indicating if full document text should be returned.
+        hybrid_weight: The weight to apply to the vector search scores.
+
+    Returns:
+        A dictionary of search results, keyed by page_id. Each value is a dictionary
+        containing chunk_text, tags, score, url, and source ("vector").
+
+    Raises:
+        Exception: If the vector search process fails at any point.
+    """
+    from src.common.indexer import VectorIndexer
+    from src.lib.embedder import generate_embedding
+
+    vector_results_map = {}
+    logger.debug("Starting vector search.")
+
+    query_embedding = await generate_embedding(query, text_type="query")
+    logger.debug("Generated embedding for search query.")
+    indexer = VectorIndexer(connection=conn)
+    vector_results_raw = await indexer.search(
+        query_vector=query_embedding,
+        limit=max_results,  # Already adjusted before calling
+        filter_payload=filter_conditions,
+    )
+    logger.info(f"Found {len(vector_results_raw)} results from raw vector search.")
+
+    for result in vector_results_raw:
+        chunk_id = result["id"]
+        score = result["score"] * hybrid_weight
+        payload = result["payload"]
+        page_id = payload.get("page_id")
+
+        if not page_id:
+            logger.warning(f"Vector result {chunk_id} missing page_id in payload.")
+            continue
+
+        if return_full_document_text:
+            doc = await get_doc_page(conn, page_id)
+            chunk_text = doc.text if doc else None
+        else:
+            chunk_text = payload.get("text")
+
+        if not chunk_text:
+            chunk_text = result.get("text_chunk")
+            if not chunk_text:
+                logger.warning(f"Vector result {chunk_id} missing text in payload and text_chunk.")
+                continue
+
+        result_tags = payload.get("tags", [])
+        url = payload.get("url")
+
+        # Store directly, combination logic will be handled after gather
+        vector_results_map[page_id] = {
+            "chunk_text": chunk_text,
+            "tags": result_tags,
+            "score": score,
+            "url": url,
+            "source": "vector",
+        }
+    logger.debug(f"Processed {len(vector_results_map)} results from vector search.")
+    return vector_results_map
+
+
+async def _perform_bm25_search(
+    conn: duckdb.DuckDBPyConnection,
+    query: str,
+    max_results: int,
+    tag_condition_sql: str,
+    return_full_document_text: bool,
+    hybrid_weight: float,
+) -> dict:
+    """
+    Performs a BM25/FTS full-text search using DuckDB FTS extension.
+
+    Args:
+        conn: DuckDB connection object.
+        query: The search query string.
+        max_results: The maximum number of results to fetch initially (typically `max_results * 2`).
+        tag_condition_sql: The SQL snippet for tag-based filtering.
+        return_full_document_text: Boolean indicating if full document text should be returned.
+        hybrid_weight: The weight for vector search (used to calculate BM25 weight as 1.0 - hybrid_weight).
+
+    Returns:
+        A dictionary of search results, keyed by page_id. Each value is a dictionary
+        containing chunk_text, tags, score, url, and source ("bm25").
+
+    Raises:
+        Exception: If the BM25 search process fails at any point.
+    """
+    # This divisor is used to normalize raw BM25 scores. It's an empirical value
+    # and may need tuning based on the typical range of BM25 scores observed
+    # from DuckDB FTS for the specific dataset to bring them into a rough 0-1 scale
+    # before weighting.
+    BM25_SCORE_NORMALIZATION_DIVISOR = 10.0
+
+    bm25_results_map = {}
+    logger.debug("Starting BM25/FTS search.")
+    escaped_query = query.replace("'", "''")
+
+    # Always attempt FTS search using fts_main_pages.match_bm25
+    bm25_sql = f"""
+    SELECT
+        p.id AS page_id,
+        p.url,
+        p.domain,
+        p.tags,
+        p.raw_text,
+        fts_main_pages.match_bm25(p.id, '{escaped_query}') AS bm25_score
+    FROM pages p
+    WHERE bm25_score IS NOT NULL {tag_condition_sql}
+    ORDER BY bm25_score DESC
+    LIMIT {max_results}
+    """  # limit is already max_results * 2 from caller
+    bm25_results_raw = conn.execute(bm25_sql).fetchall()
+    logger.info(f"FTS/BM25 search returned {len(bm25_results_raw)} raw results.")
+
+    for row in bm25_results_raw:
+        page_id, url, domain, tags_json, raw_text, bm25_score_raw = row
+        # Apply weighting for BM25
+        normalized_bm25_score = min(bm25_score_raw / BM25_SCORE_NORMALIZATION_DIVISOR, 1.0) * (
+            1.0 - hybrid_weight
+        )
+
+        if return_full_document_text:
+            chunk_text = raw_text
+        else:
+            start_pos = 0
+            for term in query.lower().split():
+                pos = raw_text.lower().find(term)
+                if pos > 0:  # Found a term, set start_pos relative to it
+                    start_pos = max(0, pos - 150)  # Context before term
+                    break
+            end_pos = min(start_pos + 500, len(raw_text))  # Snippet length
+            chunk_text = (
+                raw_text[start_pos:end_pos] + "..."
+                if end_pos < len(raw_text)
+                else raw_text[start_pos:end_pos]
+            )
+
+        result_tags = deserialize_tags(tags_json)
+        bm25_results_map[page_id] = {
+            "chunk_text": chunk_text,
+            "tags": result_tags,
+            "score": normalized_bm25_score,
+            "url": url,
+            "source": "bm25",
+        }
+    logger.debug(f"Processed {len(bm25_results_map)} results from BM25 search.")
+    return bm25_results_map
+
+
 async def search_docs(
     conn: duckdb.DuckDBPyConnection,
     query: str,
@@ -97,136 +265,103 @@ async def search_docs(
     return_full_document_text: bool = RETURN_FULL_DOCUMENT_TEXT,
     hybrid_weight: float = 0.7,  # Weight for vector search (1-hybrid_weight for BM25)
 ) -> SearchDocsResponse:
-    """Search for documents using hybrid search (semantic + BM25).
+    """Search for documents using hybrid search (semantic + BM25), performed in parallel.
 
     Always attempts FTS/BM25 search using DuckDB's FTS extension, regardless of index visibility in system tables.
+    Vector search is performed using a separate index.
+    Results from both are combined and ranked.
     """
-    logger.info(f"Searching docs with query: '{query}', tags: {tags}, max_results: {max_results}")
+    logger.debug(
+        f"Initiating parallel search with query: '{query}', tags: {tags}, max_results: {max_results}",
+    )
 
     # Prepare filter based on tags
     filter_conditions = None
     tag_condition_sql = ""
     if tags and len(tags) > 0:
         filter_conditions = {"must": [{"key": "tags", "match": {"any": tags}}]}
-        tag_conditions = []
-        for tag in tags:
-            escaped_tag = tag.replace("'", "''")
-            tag_conditions.append(f"tags LIKE '%{escaped_tag}%'")
-        tag_condition_sql = f"AND ({' OR '.join(tag_conditions)})" if tag_conditions else ""
-        logger.debug(f"Applied tag filters: {tags}")
+        tag_conditions_list = []
+        for tag_item in tags:
+            escaped_tag = tag_item.replace("'", "''")
+            tag_conditions_list.append(f"tags LIKE '%{escaped_tag}%'")
+        if tag_conditions_list:
+            tag_condition_sql = f"AND ({' OR '.join(tag_conditions_list)})"
+        logger.debug(f"Applied tag filters: {tags}. SQL: {tag_condition_sql}")
 
-    all_results = {}
+    # Determine fetch limit for individual searches
+    internal_fetch_limit = max_results * 2
+
+    tasks = [
+        _perform_vector_search(
+            conn,
+            query,
+            internal_fetch_limit,
+            filter_conditions,
+            return_full_document_text,
+            hybrid_weight,
+        ),
+        _perform_bm25_search(
+            conn,
+            query,
+            internal_fetch_limit,
+            tag_condition_sql,
+            return_full_document_text,
+            hybrid_weight,
+        ),
+    ]
+
+    gathered_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    vector_search_results_map = {}
+    bm25_search_results_map = {}
     vector_search_success = False
     bm25_search_success = False
 
-    # Step 1: Perform vector search
-    try:
-        from src.common.indexer import VectorIndexer
-        from src.lib.embedder import generate_embedding
-
-        query_embedding = await generate_embedding(query, text_type="query")
-        logger.debug("Generated embedding for search query")
-        indexer = VectorIndexer(connection=conn)
-        vector_results = await indexer.search(
-            query_vector=query_embedding,
-            limit=max_results * 2,
-            filter_payload=filter_conditions,
-        )
-        logger.info(f"Found {len(vector_results)} results from vector search")
+    # Process vector search results
+    if isinstance(gathered_results[0], Exception):
+        logger.warning(f"Vector search task failed: {gathered_results[0]!s}")
+    else:
+        vector_search_results_map = gathered_results[0]
         vector_search_success = True
-        for result in vector_results:
-            chunk_id = result["id"]
-            score = result["score"] * hybrid_weight
-            payload = result["payload"]
-            page_id = payload.get("page_id")
-            if not page_id:
-                logger.warning(f"Result {chunk_id} missing page_id in payload")
-                continue
-            if return_full_document_text:
-                doc = await get_doc_page(conn, page_id)
-                chunk_text = doc.text if doc else None
-            else:
-                chunk_text = payload.get("text")
-            if not chunk_text:
-                chunk_text = result.get("text_chunk")
-                if not chunk_text:
-                    logger.warning(f"Result {chunk_id} missing text in payload")
-                    continue
-            result_tags = payload.get("tags", [])
-            url = payload.get("url")
-            if page_id not in all_results or score > all_results[page_id]["score"]:
-                all_results[page_id] = {
-                    "chunk_text": chunk_text,
-                    "tags": result_tags,
-                    "score": score,
-                    "url": url,
-                    "source": "vector",
-                }
-    except Exception as vector_error:
-        logger.warning(f"Vector search failed: {vector_error!s}")
+        logger.info(
+            f"Vector search task completed, found {len(vector_search_results_map)} potential results."
+        )
 
-    # Step 2: Always perform BM25/FTS full-text search using DuckDB FTS extension
-    try:
-        escaped_query = query.replace("'", "''")
-        # Always attempt FTS search using fts_main_pages.match_bm25
-        try:
-            bm25_sql = f"""
-            SELECT
-                p.id AS page_id,
-                p.url,
-                p.domain,
-                p.tags,
-                p.raw_text,
-                fts_main_pages.match_bm25(p.id, '{escaped_query}') AS bm25_score
-            FROM pages p
-            WHERE bm25_score IS NOT NULL {tag_condition_sql}
-            ORDER BY bm25_score DESC
-            LIMIT {max_results * 2}
-            """
-            bm25_results = conn.execute(bm25_sql).fetchall()
-            logger.info(f"FTS/BM25 search returned {len(bm25_results)} results")
-            bm25_search_success = True
-        except Exception as e_bm25:
-            logger.warning(f"FTS/BM25 search failed: {e_bm25}")
-            bm25_results = []
+    # Process BM25 search results
+    if isinstance(gathered_results[1], Exception):
+        logger.warning(f"BM25 search task failed: {gathered_results[1]!s}")
+    else:
+        bm25_search_results_map = gathered_results[1]
+        bm25_search_success = True
+        logger.info(
+            f"BM25 search task completed, found {len(bm25_search_results_map)} potential results."
+        )
 
-        for row in bm25_results:
-            page_id, url, domain, tags_json, raw_text, bm25_score = row
-            normalized_bm25_score = min(bm25_score / 10.0, 1.0) * (1.0 - hybrid_weight)
-            if return_full_document_text:
-                chunk_text = raw_text
-            else:
-                start_pos = 0
-                for term in query.lower().split():
-                    pos = raw_text.lower().find(term)
-                    if pos > 0:
-                        start_pos = max(0, pos - 150)
-                        break
-                end_pos = min(start_pos + 500, len(raw_text))
-                chunk_text = (
-                    raw_text[start_pos:end_pos] + "..."
-                    if end_pos < len(raw_text)
-                    else raw_text[start_pos:end_pos]
-                )
-            result_tags = deserialize_tags(tags_json)
-            if page_id in all_results:
-                combined_score = max(all_results[page_id]["score"], normalized_bm25_score)
-                all_results[page_id]["score"] = combined_score
-                all_results[page_id]["source"] = "hybrid"
-            else:
-                all_results[page_id] = {
-                    "chunk_text": chunk_text,
-                    "tags": result_tags,
-                    "score": normalized_bm25_score,
-                    "url": url,
-                    "source": "bm25",
-                }
-    except Exception as bm25_error:
-        logger.warning(f"BM25/FTS search failed: {bm25_error}")
+    # Combine results
+    all_results = {}
 
-    results = []
+    # Add vector results first
+    for page_id, data in vector_search_results_map.items():
+        all_results[page_id] = data
+
+    # Add/merge BM25 results
+    for page_id, bm25_data in bm25_search_results_map.items():
+        if page_id in all_results:  # Hybrid result: found by both vector and BM25
+            # Current entry in all_results is from vector. Its score is already weighted.
+            # bm25_data['score'] is also already weighted.
+            # We take the max of the two weighted scores for hybrid results.
+            all_results[page_id]["score"] = max(all_results[page_id]["score"], bm25_data["score"])
+            all_results[page_id]["source"] = "hybrid"
+            # Keep chunk_text from vector search if present, as it might be from a specific chunk.
+            # If vector search didn't provide chunk_text but BM25 did, this would need more complex merging.
+            # For now, this matches original behavior of prioritizing vector's text if it exists.
+        else:  # BM25 only result
+            all_results[page_id] = bm25_data
+
+    # Convert combined results to SearchResult objects
+    final_results_list = []
     for page_id, result_data in all_results.items():
-        results.append(
+        final_results_list.append(
             SearchResult(
                 chunk_text=result_data["chunk_text"],
                 page_id=page_id,
@@ -235,19 +370,25 @@ async def search_docs(
                 url=result_data["url"],
             ),
         )
-    results.sort(key=lambda x: x.score, reverse=True)
-    if len(results) > max_results:
-        results = results[:max_results]
-    search_methods = []
+
+    # Sort by score and limit
+    final_results_list.sort(key=lambda x: x.score, reverse=True)
+    if len(final_results_list) > max_results:
+        final_results_list = final_results_list[:max_results]
+
+    search_methods_used = []
     if vector_search_success:
-        search_methods.append("vector")
+        search_methods_used.append("vector")
     if bm25_search_success:
-        search_methods.append("bm25")
-    search_method_str = " and ".join(search_methods) if search_methods else "no successful methods"
-    logger.info(
-        f"Hybrid search completed using {search_method_str}, returning {len(results)} results",
+        search_methods_used.append("bm25")
+    search_method_str = (
+        " and ".join(search_methods_used) if search_methods_used else "no successful methods"
     )
-    return SearchDocsResponse(results=results)
+
+    logger.info(
+        f"Hybrid search processing completed. Used: {search_method_str}. Returning {len(final_results_list)} results.",
+    )
+    return SearchDocsResponse(results=final_results_list)
 
 
 async def list_doc_pages(
@@ -347,7 +488,7 @@ async def get_doc_page(
         GetDocPageResponse: Document page text
 
     """
-    logger.info(f"Retrieving document page {page_id} (lines {starting_line}-{ending_line})")
+    logger.debug(f"Retrieving document page {page_id} (lines {starting_line}-{ending_line})")
 
     # Query for the page
     result = conn.execute(
@@ -364,7 +505,7 @@ async def get_doc_page(
         return None  # Let the API layer handle the 404
 
     raw_text = result[0]
-    logger.info(f"Found page {page_id} with {len(raw_text)} characters")
+    logger.debug(f"Found page {page_id} with {len(raw_text)} characters")
 
     # Split into lines
     lines = raw_text.splitlines()
@@ -386,7 +527,7 @@ async def get_doc_page(
 
     # Extract requested lines
     requested_lines = lines[starting_line - 1 : ending_line]
-    logger.info(f"Returning {len(requested_lines)} lines from page {page_id}")
+    logger.debug(f"Returning {len(requested_lines)} lines from page {page_id}")
 
     return GetDocPageResponse(text="\n".join(requested_lines), total_lines=total_lines)
 

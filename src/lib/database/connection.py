@@ -7,6 +7,7 @@ It is the foundational layer for database interactions in the project.
 """
 
 import pathlib
+import time  # Added for retry sleep
 from types import TracebackType
 
 import duckdb
@@ -16,11 +17,9 @@ from src.common.logger import get_logger
 from .schema import (
     BEGIN_TRANSACTION_SQL,
     CHECK_EXTENSION_LOADED_SQL,
-    CHECK_FTS_INDEXES_SQL,
     CHECK_HNSW_INDEX_SQL,
     CHECK_TABLE_EXISTS_SQL,
     CHECKPOINT_SQL,
-    CREATE_FTS_INDEX_SQL,
     CREATE_HNSW_INDEX_SQL,
     INSTALL_EXTENSION_SQL,
     LOAD_EXTENSION_SQL,
@@ -40,15 +39,8 @@ class DuckDBConnectionManager:
     including setting up necessary tables and extensions like FTS and VSS.
     """
 
-    def __init__(self, *, read_only: bool = False) -> None:
-        """Initialize the DuckDBConnectionManager.
-
-        Args:
-            read_only: If True, the database connection will be opened in
-                read-only mode. Defaults to False.
-
-        """
-        self.read_only: bool = read_only
+    def __init__(self) -> None:
+        """Initialize the DuckDBConnectionManager."""
         self.conn: duckdb.DuckDBPyConnection | None = None
         self.transaction_active: bool = False
 
@@ -104,25 +96,6 @@ class DuckDBConnectionManager:
                 "Functionality may be impacted.",
             )
 
-    def _check_fts_exists(self, conn: duckdb.DuckDBPyConnection) -> bool:
-        """Check if FTS index exists on the pages table.
-
-        Args:
-            conn: The active DuckDB connection.
-
-        Returns:
-            bool: True if the FTS index exists, False otherwise.
-        """
-        try:
-            # Check if there's an FTS index on the pages table
-            fts_indexes = conn.execute(CHECK_FTS_INDEXES_SQL).fetchall()
-            fts_index_exists = len(fts_indexes) > 0 if fts_indexes else False
-            logger.debug(f"FTS index exists on 'pages' table: {fts_index_exists}")
-            return fts_index_exists
-        except Exception as e:
-            logger.warning(f"Failed to check FTS index existence: {e}")
-            return False
-
     def _load_extensions(self, conn: duckdb.DuckDBPyConnection) -> None:
         """Install (if necessary) and loads required DuckDB extensions (FTS, VSS)."""
         self._load_single_extension(conn, "fts")
@@ -132,19 +105,21 @@ class DuckDBConnectionManager:
         """Establish and return a DuckDB connection.
 
         Ensures the data directory exists and loads necessary extensions (FTS, VSS)
-        upon successful connection.
+        upon successful connection. Retries connection on failure.
 
         Returns:
             duckdb.DuckDBPyConnection: An active DuckDB connection object.
 
         Raises:
-            FileNotFoundError: If in read-only mode and the database file doesn't exist.
             IOError: For OS-level I/O errors during directory creation.
-            duckdb.Error: For DuckDB-specific connection failures.
+            duckdb.Error: For DuckDB-specific connection failures after retries.
 
         """
         data_dir_path = pathlib.Path(DATA_DIR)
         db_file_path = pathlib.Path(DUCKDB_PATH)
+        max_retries = 3
+        retry_delay_seconds = 1
+
         try:
             data_dir_path.mkdir(parents=True, exist_ok=True)
         except OSError as e_mkdir:  # pragma: no cover
@@ -152,31 +127,40 @@ class DuckDBConnectionManager:
             logger.exception(msg)
             raise OSError(msg) from e_mkdir
 
-        logger.debug(
-            f"Connecting to DuckDB at {db_file_path} (read_only={self.read_only})",
-        )
-        if self.read_only and not db_file_path.exists():
-            msg = (
-                f"Database file {db_file_path} does not exist. Cannot create read-only connection."
-            )
-            logger.error(msg)
-            raise FileNotFoundError(msg)
-        try:
-            self.conn = duckdb.connect(str(db_file_path), read_only=self.read_only)
-            self.conn.execute(TEST_CONNECTION_SQL).fetchone()  # Test connection
-            self._load_extensions(self.conn)
-        except duckdb.Error:
-            logger.exception(f"Failed to connect to DuckDB at {db_file_path}")
-            self.conn = None
-            raise
-        except Exception as e_other:  # pragma: no cover
-            logger.exception(
-                f"An unexpected error occurred connecting to DuckDB at {db_file_path}: {e_other}",
-            )
-            self.conn = None
-            raise
-        else:
-            return self.conn
+        logger.debug(f"Connecting to DuckDB at {db_file_path}")
+
+        for attempt in range(max_retries):
+            try:
+                self.conn = duckdb.connect(str(db_file_path), read_only=False)
+                self.conn.execute(TEST_CONNECTION_SQL).fetchone()  # Test connection
+                self._load_extensions(self.conn)
+                logger.debug(f"Successfully connected to DuckDB at {db_file_path}")
+                return self.conn
+            except duckdb.Error as e_db:
+                logger.warning(
+                    f"Attempt {attempt + 1}/{max_retries} failed to connect to DuckDB at "
+                    f"{db_file_path}: {e_db}"
+                )
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay_seconds} second(s)...")
+                    time.sleep(retry_delay_seconds)
+                else:
+                    logger.error(f"All {max_retries} attempts to connect to DuckDB failed.")
+                    self.conn = None
+                    raise
+            except Exception as e_other:  # pragma: no cover
+                logger.exception(
+                    f"An unexpected error occurred connecting to DuckDB at {db_file_path}: {e_other}",
+                )
+                self.conn = None
+                raise
+        # This line should ideally not be reached if logic is correct,
+        # but as a fallback:
+        msg = "Failed to connect after multiple retries, and no exception was re-raised."
+        logger.critical(msg)
+        if self.conn is None:  # Should be set by now, but defensive
+            raise duckdb.Error(msg)  # type: ignore[misc]
+        return self.conn  # Should not be None if loop exited cleanly. Compiler hint.
 
     def close(self) -> None:
         """Close the database connection if it is open.
@@ -280,12 +264,7 @@ class DuckDBConnectionManager:
 
         Creates the 'jobs' and 'pages' tables.
         Sets up direct FTS indexing on the 'pages' table.
-        No-op if in read-only mode.
         """
-        if self.read_only:
-            logger.warning("Cannot ensure tables in read-only mode.")
-            return
-
         conn = self.ensure_connection()
         from .schema import CREATE_JOBS_TABLE_SQL, CREATE_PAGES_TABLE_SQL
 
@@ -294,15 +273,6 @@ class DuckDBConnectionManager:
             conn.execute(CREATE_PAGES_TABLE_SQL)
             conn.execute(CREATE_JOBS_TABLE_SQL)
             logger.debug("'pages' and 'jobs' tables created/verified.")
-
-            logger.debug("Ensuring FTS setup for 'pages' table...")
-            try:
-                conn.execute(CREATE_FTS_INDEX_SQL)
-                logger.debug("FTS index created/verified on 'pages' table.")
-            except Exception as fts_err:
-                logger.warning(
-                    f"Failed to complete FTS setup steps: {fts_err}. BM25 search may be impacted.",
-                )
         except Exception:
             logger.exception("Failed to create/verify base DuckDB tables")
             raise
@@ -339,12 +309,7 @@ class DuckDBConnectionManager:
         Enables experimental HNSW persistence.
         Creates the 'document_embeddings' table if it doesn't exist.
         Creates an HNSW index on the 'embedding' column.
-        No-op if in read-only mode.
         """
-        if self.read_only:
-            logger.warning("Cannot ensure VSS extension in read-only mode.")
-            return
-
         conn = self.ensure_connection()
         from .schema import CREATE_DOCUMENT_EMBEDDINGS_TABLE_SQL
 
@@ -415,30 +380,18 @@ class DuckDBConnectionManager:
         """Initialize the database: creates directory, tables, and extensions.
 
         This is the main setup method to ensure the database is ready for use.
-        In read-only mode, still loads extensions and attempts to create functions.
         """
-        logger.debug(
-            f"Initializing DuckDBConnectionManager (read_only={self.read_only})...",
-        )
+        logger.debug("Initializing DuckDBConnectionManager...")
         # The directory creation is handled by ensure_connection -> connect
         conn = self.ensure_connection()
 
-        # Always load extensions and create the BM25 function, even in read-only mode
+        # Always load extensions
         self._load_single_extension(conn, "fts")
         self._load_single_extension(conn, "vss")
 
-        # In read-only mode, check if FTS index exists to provide better diagnostics
-        if self.read_only:
-            fts_exists = self._check_fts_exists(conn)
-            if not fts_exists:
-                logger.warning(
-                    "FTS index not found in read-only mode. "
-                    "BM25 search may not work. Try running with read_only=False first."
-                )
-        else:
-            # Only create tables and indexes in write mode
-            self.ensure_tables()
-            self.ensure_vss_extension()
+        # Always ensure tables and VSS extension are set up
+        self.ensure_tables()
+        self.ensure_vss_extension()
 
         logger.debug("DuckDBConnectionManager initialization complete.")
 

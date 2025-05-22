@@ -50,7 +50,7 @@ INSTALL_EXTENSION_SQL = "INSTALL {0};"
 LOAD_EXTENSION_SQL = "LOAD {0};"
 
 # FTS (Full-Text Search) related SQL
-CREATE_FTS_INDEX_SQL = "PRAGMA create_fts_index('pages', 'id', 'raw_text');"
+CREATE_FTS_INDEX_SQL = "PRAGMA create_fts_index('pages', 'id', 'raw_text', overwrite=1);"
 CHECK_FTS_INDEXES_SQL = (
     "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'fts_idx_%'"
 )

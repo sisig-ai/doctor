@@ -34,10 +34,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         None: Indicates the application is ready.
 
     """
-    # Initialize databases in read-only mode for the web service
-    db = DatabaseOperations(read_only=True)
-    db.db.initialize()
-    db.db.close()
+    # Initialize databases for the web service
+    DatabaseOperations()
+    # The db.db.initialize() is called within DatabaseOperations constructor using a context manager.
+    # The db.db.close() is also handled by the context manager in initialize.
     logger.info("Database initialization complete")
     if not check_config():
         logger.error("Invalid configuration. Exiting.")

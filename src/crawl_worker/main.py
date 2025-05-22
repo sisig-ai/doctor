@@ -26,35 +26,38 @@ def main() -> int:
     # Initialize databases with write access
     try:
         logger.info("Initializing databases for the crawl worker...")
-        db = DatabaseOperations(read_only=False)
-        db.db.initialize()
-        logger.info("Database initialization completed successfully")
+        # DatabaseOperations() constructor now calls initialize() internally using a context manager.
+        db_ops = DatabaseOperations()
+        logger.info(
+            "Database initialization (via DatabaseOperations constructor) completed successfully."
+        )
 
         # Double-check that the document_embeddings table exists
-        # Reuse the connection from db
-        conn = db.db.conn
-        if conn is None:
-            logger.error("Failed to get DuckDB connection")
-            return 1
+        # Use a new context-managed connection for this check
+        with db_ops.db as conn_manager:
+            actual_conn = conn_manager.conn
+            if not actual_conn:
+                logger.error("Failed to get DuckDB connection for table verification.")
+                return 1
 
-        result = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'document_embeddings'",
-        ).fetchone()
+            result = actual_conn.execute(
+                "SELECT count(*) FROM information_schema.tables WHERE table_name = 'document_embeddings'",
+            ).fetchone()
 
-        if result is None:
-            logger.error("Failed to execute query to check for document_embeddings table")
-            return 1
+            if result is None:
+                logger.error("Failed to execute query to check for document_embeddings table")
+                return 1  # conn_manager will close connection
 
-        table_count = result[0]
+            table_count = result[0]
 
-        if table_count == 0:
-            logger.exception("document_embeddings table is still missing after initialization!")
-            return 1
-        logger.info("Verified document_embeddings table exists")
+            if table_count == 0:
+                logger.error("document_embeddings table is still missing after initialization!")
+                return 1  # conn_manager will close connection
+            logger.info("Verified document_embeddings table exists")
+        # Connection is closed by conn_manager context exit
 
-        db.db.close()
     except Exception as e:
-        logger.error(f"Database initialization failed: {e!s}")
+        logger.error(f"Database initialization or verification failed: {e!s}")
         return 1
 
     # Connect to Redis

@@ -13,7 +13,6 @@ original `Database` class, primarily to support existing tests.
 import asyncio
 import datetime
 import uuid
-from types import TracebackType
 from typing import Any
 from urllib.parse import urlparse
 
@@ -22,7 +21,11 @@ import duckdb  # For type hinting duckdb.DuckDBPyConnection
 from src.common.logger import get_logger
 
 from .connection import DuckDBConnectionManager
-from .schema import CHECKPOINT_SQL, INSERT_PAGE_SQL, UPDATE_JOB_STATUS_BASE_SQL
+from .schema import (
+    CHECKPOINT_SQL,
+    INSERT_PAGE_SQL,
+    UPDATE_JOB_STATUS_BASE_SQL,
+)
 
 logger = get_logger(__name__)
 
@@ -39,41 +42,14 @@ class DatabaseOperations:
     These compatibility layers may be refactored or removed in future versions.
     """
 
-    def __init__(self, *, read_only: bool = False) -> None:
-        """Initialize the DatabaseOperations instance.
-
-        Args:
-            read_only: If True, the underlying database connection will be
-                opened in read-only mode. Defaults to False.
-
-        """
-        self.db: DuckDBConnectionManager = DuckDBConnectionManager(read_only=read_only)
+    def __init__(self) -> None:
+        """Initialize the DatabaseOperations instance."""
+        self.db: DuckDBConnectionManager = DuckDBConnectionManager()
         self._write_lock: asyncio.Lock = asyncio.Lock()
-        self.db.initialize()  # Ensure tables and extensions are set up
-
-    def __enter__(self) -> "DatabaseOperations":
-        """Enter the context manager, ensuring a database connection.
-
-        Returns:
-            Self for use in a with statement.
-        """
-        self.db.ensure_connection()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None:
-        """Exit the context manager, closing the database connection.
-
-        Args:
-            exc_type: The exception type if an exception was raised in the with block, else None.
-            exc_val: The exception value if an exception was raised, else None.
-            exc_tb: The exception traceback if an exception was raised, else None.
-        """
-        self.db.close()
+        # Initialize the database (ensures tables/extensions exist)
+        # This will open and close a connection once.
+        with self.db as conn_manager:
+            conn_manager.initialize()
 
     async def store_page(
         self,
@@ -111,51 +87,45 @@ class DatabaseOperations:
         )
 
         async with self._write_lock:
-            conn = self.db.ensure_connection()
-            try:
-                await asyncio.to_thread(self.db.begin_transaction)
-                from .utils import serialize_tags
+            with self.db as conn_manager:  # DuckDBConnectionManager is now a context manager
+                actual_conn = conn_manager.conn  # Get the actual DuckDBPyConnection
+                if not actual_conn:  # Should not happen if __enter__ works
+                    raise RuntimeError("Failed to obtain database connection from manager.")
+                try:
+                    await asyncio.to_thread(conn_manager.begin_transaction)
+                    from .utils import serialize_tags
 
-                await asyncio.to_thread(
-                    conn.execute,
-                    INSERT_PAGE_SQL,
-                    (
-                        current_page_id,
-                        url,
-                        domain,
-                        text,
-                        datetime.datetime.now(datetime.UTC),
-                        serialize_tags(tags),
-                        job_id,
-                    ),
-                )
-                await asyncio.to_thread(self.db.commit)
-            except duckdb.Error:
-                logger.exception(
-                    f"DuckDB error storing page {current_page_id} for URL {url}",
-                )
-                await asyncio.to_thread(self.db.rollback)
-                if conn and hasattr(conn, "rollback") and self.db.transaction_active:
-                    try:  # pragma: no cover
-                        logger.debug(
-                            "Attempting direct rollback on connection object due to DB error.",
-                        )
-                        conn.rollback()
-                    except Exception as direct_rollback_err:  # pragma: no cover
-                        logger.warning(
-                            f"Direct rollback on connection failed: {direct_rollback_err}",
-                        )
-                raise
-            except Exception as e_generic:  # pragma: no cover
-                msg = f"Unexpected error storing page {current_page_id} for URL {url}"
-                logger.exception(msg)
-                await asyncio.to_thread(self.db.rollback)
-                raise RuntimeError(msg) from e_generic  # Use RuntimeError for generic
-            else:
-                logger.debug(
-                    f"Successfully stored page {current_page_id} in database.",
-                )
-                return current_page_id
+                    await asyncio.to_thread(
+                        actual_conn.execute,
+                        INSERT_PAGE_SQL,
+                        (
+                            current_page_id,
+                            url,
+                            domain,
+                            text,
+                            datetime.datetime.now(datetime.UTC),
+                            serialize_tags(tags),
+                            job_id,
+                        ),
+                    )
+                    await asyncio.to_thread(conn_manager.commit)
+                except duckdb.Error:
+                    logger.exception(
+                        f"DuckDB error storing page {current_page_id} for URL {url}",
+                    )
+                    await asyncio.to_thread(conn_manager.rollback)
+                    # The conn_manager handles its own connection's state during rollback
+                    raise
+                except Exception as e_generic:  # pragma: no cover
+                    msg = f"Unexpected error storing page {current_page_id} for URL {url}"
+                    logger.exception(msg)
+                    await asyncio.to_thread(conn_manager.rollback)
+                    raise RuntimeError(msg) from e_generic
+                else:
+                    logger.debug(
+                        f"Successfully stored page {current_page_id} in database.",
+                    )
+                    return current_page_id
 
     def _build_update_job_query(
         self,
@@ -214,74 +184,83 @@ class DatabaseOperations:
         )
         update_successful = False
         async with self._write_lock:
-            conn = self.db.ensure_connection()
-            try:
-                await asyncio.to_thread(self.db.begin_transaction)
+            with self.db as conn_manager:  # DuckDBConnectionManager is now a context manager
+                actual_conn = conn_manager.conn
+                if not actual_conn:
+                    raise RuntimeError("Failed to obtain database connection from manager.")
+                try:
+                    await asyncio.to_thread(conn_manager.begin_transaction)
 
-                query, params_tuple = self._build_update_job_query(
-                    job_id,
-                    status,
-                    pages_discovered,
-                    pages_crawled,
-                    error_message,
-                )
-
-                cursor = await asyncio.to_thread(conn.execute, query, params_tuple)
-                rows_affected = cursor.rowcount if cursor else 0
-
-                if rows_affected == 0:
-                    logger.warning(
-                        f"Job status update for {job_id} affected 0 rows. Job may not exist.",
+                    query, params_tuple = self._build_update_job_query(
+                        job_id,
+                        status,
+                        pages_discovered,
+                        pages_crawled,
+                        error_message,
                     )
-                else:
-                    logger.debug(
-                        f"Job status update for {job_id} affected {rows_affected} rows.",
-                    )
-                    update_successful = True
-                await asyncio.to_thread(self.db.commit)
-            except duckdb.Error:
-                logger.exception(
-                    f"DuckDB error updating job {job_id} to status {status}",
-                )
-                await asyncio.to_thread(self.db.rollback)
-                if conn and hasattr(conn, "rollback") and self.db.transaction_active:
-                    try:  # pragma: no cover
-                        logger.debug(
-                            "Attempting direct rollback on connection object due to DB error.",
-                        )
-                        conn.rollback()
-                    except Exception as direct_rollback_err:  # pragma: no cover
+
+                    cursor = await asyncio.to_thread(actual_conn.execute, query, params_tuple)
+                    rows_affected = cursor.rowcount if cursor else 0
+
+                    if rows_affected == 0:
                         logger.warning(
-                            f"Direct rollback on connection failed: {direct_rollback_err}",
+                            f"Job status update for {job_id} affected 0 rows. Job may not exist.",
                         )
-                raise
-            except Exception as e_generic:  # pragma: no cover
-                msg = f"Unexpected error updating job {job_id} to status {status}"
-                logger.exception(msg)
-                await asyncio.to_thread(self.db.rollback)
-                raise RuntimeError(msg) from e_generic  # Use RuntimeError
-            else:
-                if update_successful and status in ["completed", "failed"]:
-                    await self.checkpoint_async()
-                    logger.info(
-                        f"Job {job_id} successfully updated to {status} and checkpointed.",
+                    else:
+                        logger.debug(
+                            f"Job status update for {job_id} affected {rows_affected} rows.",
+                        )
+                        update_successful = True
+                    await asyncio.to_thread(conn_manager.commit)
+                except duckdb.Error:
+                    logger.exception(
+                        f"DuckDB error updating job {job_id} to status {status}",
                     )
-                elif update_successful:
-                    logger.info(f"Job {job_id} successfully updated to {status}.")
+                    await asyncio.to_thread(conn_manager.rollback)
+                    raise
+                except Exception as e_generic:  # pragma: no cover
+                    msg = f"Unexpected error updating job {job_id} to status {status}"
+                    logger.exception(msg)
+                    await asyncio.to_thread(conn_manager.rollback)
+                    raise RuntimeError(msg) from e_generic
+                else:
+                    if update_successful and status in ["completed", "failed"]:
+                        # Call checkpoint_async which will handle its own connection context
+                        await self._checkpoint_internal_async()
+                        logger.info(
+                            f"Job {job_id} successfully updated to {status} and checkpointed.",
+                        )
+                    elif update_successful:
+                        logger.info(f"Job {job_id} successfully updated to {status}.")
+
+    async def _checkpoint_internal_async(self) -> None:
+        """Internal method to force a database checkpoint. Assumes lock may be held."""
+        logger.debug("Attempting to force database checkpoint (internal)...")
+        # This method is called from within an existing write_lock context if called
+        # after a successful job update. If called directly, it needs its own context.
+        # For simplicity, we'll assume the lock is managed by the caller or not strictly needed
+        # if this were to be public, but since it's an internal helper for now:
+        with self.db as conn_manager:
+            actual_conn = conn_manager.conn
+            if not actual_conn:
+                raise RuntimeError("Failed to obtain database connection for checkpoint.")
+            try:
+                await asyncio.to_thread(actual_conn.execute, CHECKPOINT_SQL)
+                logger.info("Database checkpoint successful (internal).")
+            except duckdb.Error as e:  # pragma: no cover
+                logger.exception(f"Failed to force database checkpoint due to DB error: {e}")
+                raise
+            except Exception as e:  # pragma: no cover
+                logger.exception(f"Unexpected error during database checkpoint: {e}")
+                raise
 
     async def checkpoint_async(self) -> None:
         """Force a database checkpoint to ensure changes are persisted.
 
         This operation is typically called after critical updates, such as when
         a job status changes to "completed" or "failed".
+        This is a public method and will acquire the write lock.
         """
-        logger.info("Attempting to force database checkpoint...")
+        logger.info("Attempting to force database checkpoint (public)...")
         async with self._write_lock:
-            conn = self.db.ensure_connection()
-            try:
-                await asyncio.to_thread(conn.execute, CHECKPOINT_SQL)
-                logger.info("Database checkpoint successful.")
-            except duckdb.Error:  # pragma: no cover
-                logger.exception("Failed to force database checkpoint due to DB error")
-            except Exception:  # pragma: no cover
-                logger.exception("Unexpected error during database checkpoint")
+            await self._checkpoint_internal_async()
