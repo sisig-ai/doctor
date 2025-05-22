@@ -11,7 +11,8 @@ from src.common.config import REDIS_URI
 from src.common.logger import get_logger
 from src.common.processor import process_page_batch
 from src.lib.crawler import crawl_url
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
+from src.lib.database.utils import serialize_tags
 
 # Get logger for this module
 logger = get_logger(__name__)
@@ -41,15 +42,15 @@ def create_job(
     logger.info(f"Creating new job {job_id} for URL: {url}, max pages: {max_pages}")
 
     # Create job record in DuckDB
-    db = Database()
+    db = DatabaseOperations()
     now = datetime.datetime.now()
 
     try:
         # Insert into DuckDB
         logger.info(f"Inserting job {job_id} into DuckDB")
-        db.connect()
+        db.db.ensure_connection()
         db.db.begin_transaction()
-        db.conn.execute(
+        db.db.conn.execute(
             """
             INSERT INTO jobs (
                 job_id, start_url, status, pages_discovered, pages_crawled,
@@ -64,7 +65,7 @@ def create_job(
                 0,
                 0,
                 max_pages,
-                Database.serialize_tags(tags),
+                serialize_tags(tags),
                 now,
                 now,
             ),
@@ -73,10 +74,10 @@ def create_job(
         db.db.commit()
 
         # Force a checkpoint to ensure changes are persisted
-        db.conn.execute("CHECKPOINT")
+        db.db.conn.execute("CHECKPOINT")
 
         # Verify the job was created by reading it back
-        job_record = db.conn.execute(
+        job_record = db.db.conn.execute(
             "SELECT job_id FROM jobs WHERE job_id = ?",
             (job_id,),
         ).fetchone()
@@ -108,7 +109,7 @@ def create_job(
         logger.exception(f"Error creating job for URL {url}: {e!s}")
         raise
     finally:
-        db.close()
+        db.db.close()
 
 
 def perform_crawl(
@@ -135,7 +136,7 @@ def perform_crawl(
     logger.info(f"Starting crawl job {job_id} for URL: {url}, max pages: {max_pages}")
 
     # Update job status to running
-    with Database() as db:
+    with DatabaseOperations() as db:
         db.update_job_status(job_id, "running")
 
     try:
@@ -143,7 +144,7 @@ def perform_crawl(
         result = asyncio.run(_execute_pipeline(job_id, url, tags, max_pages))
 
         # Update job status to completed
-        with Database() as db:
+        with DatabaseOperations() as db:
             db.update_job_status(job_id, "completed")
 
         logger.info(f"Completed crawl job {job_id}: {result}")
@@ -153,7 +154,7 @@ def perform_crawl(
         logger.exception(f"Error in crawl job {job_id}: {e!s}")
 
         # Update job status to failed
-        with Database() as db:
+        with DatabaseOperations() as db:
             db.update_job_status(job_id, "failed", error_message=str(e))
 
         return {"job_id": job_id, "status": "failed", "error": str(e)}
@@ -180,7 +181,7 @@ async def _execute_pipeline(
     logger.info(f"Job {job_id}: Starting pipeline for URL: {url} with max_pages={max_pages}")
 
     # Update job status to indicate crawling has started
-    with Database() as db:
+    with DatabaseOperations() as db:
         db.update_job_status(
             job_id=job_id,
             status="running",
@@ -196,7 +197,7 @@ async def _execute_pipeline(
     logger.info(f"Job {job_id}: Crawl discovered {pages_discovered} pages")
 
     # Update job progress after crawl phase
-    with Database() as db:
+    with DatabaseOperations() as db:
         db.update_job_status(
             job_id=job_id,
             status="running",
@@ -221,7 +222,7 @@ async def _execute_pipeline(
         )
 
         # Final update before completing
-        with Database() as db:
+        with DatabaseOperations() as db:
             db.update_job_status(
                 job_id=job_id,
                 status="running",
@@ -233,7 +234,7 @@ async def _execute_pipeline(
         pages_crawled = 0
 
         # Update status for empty crawl
-        with Database() as db:
+        with DatabaseOperations() as db:
             db.update_job_status(
                 job_id=job_id,
                 status="running",
@@ -277,8 +278,8 @@ def delete_docs(
     )
 
     # Get a database instance with write access
-    db = Database(read_only=False)
-    db.connect()
+    db = DatabaseOperations(read_only=False)
+    db.db.ensure_connection()
     db.db.begin_transaction()
 
     try:
@@ -309,13 +310,13 @@ def delete_docs(
         # Get the IDs of pages that will be deleted
         query = f"SELECT id FROM pages WHERE {where_clause}"
         logger.debug(f"Executing query to get page IDs: {query}")
-        results = db.conn.execute(query, params).fetchall()
+        results = db.db.conn.execute(query, params).fetchall()
         page_ids_to_delete = [row[0] for row in results]
 
         # Then delete from SQL database
         delete_query = f"DELETE FROM pages WHERE {where_clause}"
         logger.debug(f"Executing delete query: {delete_query}")
-        cursor = db.conn.execute(delete_query, params)
+        cursor = db.db.conn.execute(delete_query, params)
         deleted_pages = cursor.rowcount
 
         # Commit the changes
@@ -332,4 +333,4 @@ def delete_docs(
         logger.error(f"Error deleting documents: {e!s}")
         raise
     finally:
-        db.close()
+        db.db.close()

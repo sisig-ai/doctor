@@ -1,0 +1,8 @@
+---
+description: Refactoring and implementing new logic
+globs:
+alwaysApply: false
+---
+- Run tests after refactor/implementation is completed, ensuring they pass, and add news tests as necessary
+- To run the tests, do `pytest` (making sure that you are using `.venv/bin/python`)
+- When tests fail, adjust them according to the changes in code OR fix the code if it's a logic issue

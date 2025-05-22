@@ -1,0 +1,8 @@
+---
+description:
+globs:
+alwaysApply: true
+---
+- Use Google-style docstrings
+- Always type-annotate variables and methods
+- After making all changes, run `ruff format` and `ruff check --fix`

@@ -114,19 +114,19 @@ def in_memory_duckdb_connection():
             # Use the connection for testing
             ...
     """
-    from src.lib.database import Database
+    from src.lib.database import DatabaseOperations
 
     # Create in-memory connection
     conn = duckdb.connect(":memory:")
 
     try:
         # Use the Database class to set up the connection
-        db = Database()
+        db = DatabaseOperations()
         db.conn = conn
 
         # Create tables and set up VSS extension
-        db.ensure_tables()
-        db.ensure_vss_extension()
+        db.db.ensure_tables()
+        db.db.ensure_vss_extension()
 
         yield conn
     finally:
@@ -143,15 +143,15 @@ def ensure_duckdb_database():
     import os
 
     from src.common.config import DUCKDB_PATH
-    from src.lib.database import Database
+    from src.lib.database import DatabaseOperations
 
     # Only initialize if the file doesn't exist
     if not os.path.exists(DUCKDB_PATH):
         print(f"Database file {DUCKDB_PATH} does not exist. Creating it for tests...")
         try:
-            db = Database(read_only=False)
-            db.initialize()
-            db.close()
+            db = DatabaseOperations(read_only=False)
+            db.db.initialize()
+            db.db.close()
             print(f"Successfully created database at {DUCKDB_PATH}")
         except Exception as e:
             print(f"Warning: Failed to create database: {e}")

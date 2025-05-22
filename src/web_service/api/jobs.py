@@ -13,7 +13,7 @@ from src.common.models import (
     FetchUrlResponse,
     JobProgressResponse,
 )
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
 from src.web_service.services.job_service import (
     fetch_url,
     get_job_count,
@@ -85,8 +85,8 @@ async def job_progress_endpoint(
 
         try:
             # Get a fresh read-only connection each time
-            db = Database(read_only=True)
-            conn = await db.connect_with_retry()
+            db = DatabaseOperations(read_only=True)
+            conn = db.db.ensure_connection()
             logger.info(f"Established fresh read-only connection to database (attempt {attempts})")
 
             # Call the service function
@@ -99,7 +99,7 @@ async def job_progress_endpoint(
                 )
                 # Close connection before sleeping
                 if conn:
-                    conn.close()
+                    db.db.close()
                     conn = None  # Ensure we get a fresh one next iteration
 
                 # If this was the last attempt, break the loop to raise 404 outside
@@ -131,7 +131,7 @@ async def job_progress_endpoint(
                 # Clean up potentially broken connection before retrying
                 if conn:
                     try:
-                        conn.close()
+                        db.db.close()
                         conn = None
                     except Exception as close_err:
                         logger.warning(
@@ -144,7 +144,7 @@ async def job_progress_endpoint(
             # Clean up connection if open
             if conn:
                 try:
-                    conn.close()
+                    db.db.close()
                 except Exception as close_err:
                     logger.warning(
                         f"Error closing connection during final error handling: {close_err}",
@@ -157,7 +157,7 @@ async def job_progress_endpoint(
         finally:
             # Make sure to close the connection if it's still open *at the end of this attempt*
             if conn:
-                conn.close()
+                db.db.close()
 
     # If the loop finished without finding the job (i.e., break was hit after max attempts)
     # raise the 404 error.

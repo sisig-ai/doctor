@@ -12,7 +12,6 @@ original `Database` class, primarily to support existing tests.
 
 import asyncio
 import datetime
-import pathlib  # For PTH110
 import uuid
 from types import TracebackType
 from typing import Any
@@ -20,7 +19,6 @@ from urllib.parse import urlparse
 
 import duckdb  # For type hinting duckdb.DuckDBPyConnection
 
-from src.common.config import DUCKDB_PATH  # For connect_with_retry
 from src.common.logger import get_logger
 
 from .connection import DuckDBConnectionManager
@@ -73,45 +71,7 @@ class DatabaseOperations:
             exc_val: The exception value if an exception was raised, else None.
             exc_tb: The exception traceback if an exception was raised, else None.
         """
-        self.close()
-
-    @staticmethod
-    def serialize_tags(tags: list[str] | None) -> str:
-        """Serialize a list of tags to a JSON string. (Backward compatibility).
-
-        Note:
-            This method is provided for backward compatibility. Prefer using
-            `src.lib.database.utils.serialize_tags` directly.
-
-        Args:
-            tags: A list of tag strings, or None.
-
-        Returns:
-            A JSON string representation of the tags list.
-
-        """
-        from .utils import serialize_tags as _serialize_tags
-
-        return _serialize_tags(tags)
-
-    @staticmethod
-    def deserialize_tags(tags_json: str | None) -> list[str]:
-        """Deserialize a tags JSON string to a list of strings. (Backward compatibility).
-
-        Note:
-            This method is provided for backward compatibility. Prefer using
-            `src.lib.database.utils.deserialize_tags` directly.
-
-        Args:
-            tags_json: The JSON string containing the tags, or None.
-
-        Returns:
-            A list of tag strings.
-
-        """
-        from .utils import deserialize_tags as _deserialize_tags
-
-        return _deserialize_tags(tags_json)
+        self.db.close()
 
     async def store_page(
         self,
@@ -152,6 +112,8 @@ class DatabaseOperations:
             conn = self.db.ensure_connection()
             try:
                 await asyncio.to_thread(self.db.begin_transaction)
+                from .utils import serialize_tags
+
                 await asyncio.to_thread(
                     conn.execute,
                     """INSERT INTO pages (id, url, domain, raw_text, crawl_date, tags, job_id)
@@ -162,7 +124,7 @@ class DatabaseOperations:
                         domain,
                         text,
                         datetime.datetime.now(datetime.UTC),
-                        self.serialize_tags(tags),
+                        serialize_tags(tags),
                         job_id,
                     ),
                 )
@@ -322,156 +284,3 @@ class DatabaseOperations:
                 logger.exception("Failed to force database checkpoint due to DB error")
             except Exception:  # pragma: no cover
                 logger.exception("Unexpected error during database checkpoint")
-
-    # --- Backward Compatibility Methods ---
-    # These methods are for backward compatibility, primarily for tests, and may be refactored.
-
-    async def connect_with_retry(
-        self,
-        max_attempts: int = 3,
-        retry_delay: float = 0.1,
-    ) -> duckdb.DuckDBPyConnection:
-        """(Backward Compatibility) Get a DuckDB connection with retry logic.
-
-        Note:
-            This method is for backward compatibility. Direct usage of
-            `DuckDBConnectionManager.connect()` or `ensure_connection()` is preferred.
-
-        Args:
-            max_attempts: Maximum number of connection attempts.
-            retry_delay: Initial delay between retries (doubles after each attempt).
-
-        Returns:
-            An active DuckDB connection.
-
-        Raises:
-            FileNotFoundError: If DB file not found in read-only mode.
-            duckdb.Error: For DuckDB specific errors during connection attempts.
-            RuntimeError: If connection fails after all retries from other causes.
-
-        """
-        logger.warning("connect_with_retry is a backward compatibility method.")
-
-        attempts = 0
-        last_error: Exception | None = None
-        self.db.conn = None
-
-        while attempts < max_attempts:
-            attempts += 1
-            try:
-                logger.debug(f"Connection attempt {attempts}/{max_attempts}...")
-                if self.db.read_only and not pathlib.Path(DUCKDB_PATH).exists():
-                    msg = f"DB file not found for read-only: {DUCKDB_PATH}"
-                    raise FileNotFoundError(msg)  # noqa: TRY301
-                self.db.conn = self.db.connect()
-            except FileNotFoundError as e_fnf:
-                last_error = e_fnf
-                logger.warning(f"Connection attempt {attempts} failed: {e_fnf}")
-            except duckdb.Error as e_db:
-                last_error = e_db
-                logger.warning(f"Connection attempt {attempts} (DB error): {e_db}")
-                self.db.close()
-            except Exception as e_generic:  # noqa: BLE001
-                last_error = e_generic
-                logger.warning(f"Connection attempt {attempts} (General error): {e_generic}")
-                self.db.close()
-            else:
-                return self.db.conn
-
-            if attempts < max_attempts:
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                logger.error(f"All {max_attempts} connection attempts failed.")
-                break
-
-        if last_error:
-            raise last_error
-
-        fallback_msg = "Failed to connect to DuckDB after multiple retries (unknown loop exit)."
-        raise RuntimeError(fallback_msg)  # pragma: no cover
-
-    def close(self) -> None:
-        """(Backward Compatibility) Close the underlying database connection.
-
-        Note:
-            This method is for backward compatibility. The connection manager
-            handles closing, or use context management (`with DatabaseOperations()`).
-
-        """
-        logger.debug("Compatibility close() called on DatabaseOperations.")
-        self.db.close()
-
-    def initialize(self) -> None:
-        """(Backward Compatibility) Initialize the database.
-
-        Note:
-            This method is for backward compatibility. Initialization is typically
-            handled by the `DuckDBConnectionManager` used internally.
-
-        """
-        logger.debug("Compatibility initialize() called on DatabaseOperations.")
-        self.db.initialize()
-
-    def ensure_connection(self) -> duckdb.DuckDBPyConnection:
-        """(Backward Compatibility) Ensure a valid database connection exists.
-
-        Note:
-            This method is for backward compatibility.
-
-        """
-        logger.debug("Compatibility ensure_connection() called on DatabaseOperations.")
-        return self.db.ensure_connection()
-
-    @property
-    def conn(self) -> duckdb.DuckDBPyConnection | None:
-        """(Backward Compatibility) Access the raw DuckDB connection object.
-
-        Note:
-            This property is for backward compatibility, primarily for tests.
-
-        """
-        return self.db.conn
-
-    @conn.setter
-    def conn(self, value: duckdb.DuckDBPyConnection | None) -> None:
-        """(Backward Compatibility) Set the raw DuckDB connection object.
-
-        Note:
-            This property setter is for backward compatibility, primarily for tests.
-
-        """
-        logger.debug("Compatibility conn property setter called on DatabaseOperations.")
-        self.db.conn = value
-
-    def connect(self) -> duckdb.DuckDBPyConnection:
-        """(Backward Compatibility) Establish a database connection.
-
-        Note:
-            This method is for backward compatibility.
-
-        """
-        logger.debug("Compatibility connect() called on DatabaseOperations.")
-        return self.db.connect()
-
-    def ensure_tables(self) -> None:
-        """(Backward Compatibility) Ensure all required database tables exist.
-
-        Note:
-            This method is for backward compatibility.
-
-        """
-        logger.debug("Compatibility ensure_tables() called on DatabaseOperations.")
-        if hasattr(self.db, "ensure_tables"):
-            self.db.ensure_tables()
-
-    def ensure_vss_extension(self) -> None:
-        """(Backward Compatibility) Ensure VSS extension and tables exist.
-
-        Note:
-            This method is for backward compatibility.
-
-        """
-        logger.debug("Compatibility ensure_vss_extension() called on DatabaseOperations.")
-        if hasattr(self.db, "ensure_vss_extension"):
-            self.db.ensure_vss_extension()

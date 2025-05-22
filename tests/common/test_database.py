@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.common.logger import get_logger  # Import get_logger
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
+from src.lib.database.utils import serialize_tags, deserialize_tags
 
 # Get logger for this module - for use in tests if needed, though test output is usually via pytest
 logger = get_logger(__name__)  # Define logger
@@ -56,10 +57,10 @@ def db_instance(temp_db_path):
     # Or, more directly, patch src.common.config.DUCKDB_PATH
 
     with patch("src.common.config.DUCKDB_PATH", temp_db_path):
-        db = Database()
-        db.initialize()  # Ensure tables are created
+        db = DatabaseOperations()
+        db.db.initialize()  # Ensure tables are created by the connection manager
         yield db
-        db.close()
+        db.db.close()  # Close using the connection manager
 
 
 @pytest.mark.unit
@@ -79,8 +80,8 @@ async def test_store_page(sample_url, sample_text, job_id, mock_duckdb_connectio
         mock_datetime.now.return_value = now
 
         # Create a database instance
-        db = Database()
-        db.conn = mock_duckdb_connection
+        db = DatabaseOperations()
+        db.db.conn = mock_duckdb_connection
 
         # Call the method without providing a page_id
         page_id = await db.store_page(
@@ -165,7 +166,7 @@ async def test_store_page_error_handling(sample_url, sample_text, job_id, mock_d
             Exception("Database error"),
         ]
 
-        db = Database()
+        db = DatabaseOperations()
         # db.db.conn will be set by the first ensure_connection -> connect() call if not pre-set
         # For this test, we can pre-set it to ensure the mock is used as intended from the start
         db.db.conn = mock_duckdb_connection
@@ -199,8 +200,8 @@ async def test_update_job_status_basic(job_id, mock_duckdb_connection):
         mock_duckdb_connection.execute.return_value = mock_cursor
 
         # Create a database instance
-        db = Database()
-        db.conn = mock_duckdb_connection
+        db = DatabaseOperations()
+        db.db.conn = mock_duckdb_connection
 
         # Call the method with just status
         await db.update_job_status(job_id=job_id, status="running")
@@ -239,8 +240,8 @@ async def test_update_job_status_with_all_options(job_id, mock_duckdb_connection
         mock_duckdb_connection.execute.return_value = mock_cursor
 
         # Create a database instance
-        db = Database()
-        db.conn = mock_duckdb_connection
+        db = DatabaseOperations()
+        db.db.conn = mock_duckdb_connection
 
         # Call the method with all options
         await db.update_job_status(
@@ -288,7 +289,9 @@ async def test_update_job_status_checkpoint(job_id, mock_duckdb_connection):
 
     with (
         patch("src.lib.database.connection.duckdb.connect", return_value=mock_duckdb_connection),
-        patch.object(Database, "checkpoint_async", new_callable=AsyncMock) as mock_checkpoint_async,
+        patch.object(
+            DatabaseOperations, "checkpoint_async", new_callable=AsyncMock
+        ) as mock_checkpoint_async,
     ):
         mock_cursor = MagicMock()
         mock_cursor.rowcount = 1
@@ -296,8 +299,8 @@ async def test_update_job_status_checkpoint(job_id, mock_duckdb_connection):
         # It might be called multiple times by update_job_status (update, then select to verify)
         mock_duckdb_connection.execute.return_value = mock_cursor
 
-        db = Database()
-        db.conn = mock_duckdb_connection  # Assign the mock connection
+        db = DatabaseOperations()
+        db.db.conn = mock_duckdb_connection  # Assign the mock connection
 
         # Test with 'completed' status
         await db.update_job_status(job_id=job_id, status="completed")
@@ -337,7 +340,7 @@ async def test_update_job_status_error_handling(job_id, mock_duckdb_connection):
             Exception("Database error"),
         ]
 
-        db = Database()
+        db = DatabaseOperations()
         db.db.conn = mock_duckdb_connection
 
         with pytest.raises(RuntimeError) as excinfo:  # Operations layer wraps with RuntimeError
@@ -356,17 +359,17 @@ def test_serialize_tags():
     """Test the serialize_tags static method."""
     # Test with normal list
     tags = ["tag1", "tag2", "tag3"]
-    serialized = Database.serialize_tags(tags)
+    serialized = serialize_tags(tags)
     assert serialized == '["tag1", "tag2", "tag3"]'
 
     # Test with empty list
     empty_tags = []
-    serialized = Database.serialize_tags(empty_tags)
+    serialized = serialize_tags(empty_tags)
     assert serialized == "[]"
 
     # Test with None
     none_tags = None
-    serialized = Database.serialize_tags(none_tags)
+    serialized = serialize_tags(none_tags)
     assert serialized == "[]"
 
 
@@ -375,41 +378,43 @@ def test_deserialize_tags():
     """Test the deserialize_tags static method."""
     # Test with normal JSON array
     serialized = '["tag1", "tag2", "tag3"]'
-    tags = Database.deserialize_tags(serialized)
+    tags = deserialize_tags(serialized)
     assert tags == ["tag1", "tag2", "tag3"]
 
     # Test with empty array
     empty_serialized = "[]"
-    tags = Database.deserialize_tags(empty_serialized)
+    tags = deserialize_tags(empty_serialized)
     assert tags == []
 
     # Test with None/empty string
-    tags = Database.deserialize_tags(None)
+    tags = deserialize_tags(None)
     assert tags == []
-    tags = Database.deserialize_tags("")
+    tags = deserialize_tags("")
     assert tags == []
 
     # Test with invalid JSON
     invalid_json = "{not valid json"
-    tags = Database.deserialize_tags(invalid_json)
+    tags = deserialize_tags(invalid_json)
     assert tags == []
 
 
 @pytest.mark.integration
 @pytest.mark.async_test
-async def test_async_lock_serializes_writes(db_instance: Database, job_id: str, sample_url: str):
+async def test_async_lock_serializes_writes(
+    db_instance: DatabaseOperations, job_id: str, sample_url: str
+):
     """Test that the asyncio.Lock in Database serializes concurrent write operations."""
     num_tasks = 3
     increments_per_task = 2  # Keep small to run test faster
     test_job_id = f"lock_test_job_{uuid.uuid4()}"
 
     # Synchronously add a job for testing.
-    db_instance.ensure_connection()
-    db_instance.conn.execute(
+    db_instance.db.ensure_connection()
+    db_instance.db.conn.execute(
         "INSERT INTO jobs (job_id, start_url, status, pages_crawled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         (test_job_id, sample_url, "initial", 0, datetime.datetime.now(), datetime.datetime.now()),
     )
-    db_instance.conn.commit()
+    db_instance.db.conn.commit()
 
     active_critical_section_tasks = 0
     max_concurrent_critical_section_tasks = 0
@@ -446,7 +451,7 @@ async def test_async_lock_serializes_writes(db_instance: Database, job_id: str, 
         active_critical_section_tasks -= 1
         original_release(*args, **kwargs)  # Actually release the lock
 
-    async def task_worker(db: Database, current_job_id: str, task_idx: int):
+    async def task_worker(db: DatabaseOperations, current_job_id: str, task_idx: int):
         # print(f"Task Worker {task_idx} starting for job {current_job_id}")
         for i in range(increments_per_task):
             # Each task will try to update the same job record
@@ -492,7 +497,7 @@ async def test_async_lock_serializes_writes(db_instance: Database, job_id: str, 
     # This part is tricky because the order of task completion isn't guaranteed.
     # However, since each task sets a specific pages_crawled value, we can check if it's one of the expected final values.
     # Expected final values range from 1 to num_tasks * increments_per_task.
-    final_row = db_instance.conn.execute(
+    final_row = db_instance.db.conn.execute(
         "SELECT pages_crawled, status FROM jobs WHERE job_id = ?",
         (test_job_id,),
     ).fetchone()

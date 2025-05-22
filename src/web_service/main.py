@@ -14,7 +14,7 @@ from src.common.config import (
     check_config,
 )
 from src.common.logger import get_logger
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
 from src.web_service.api import api_router
 
 # Get logger for this module
@@ -35,9 +35,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     """
     # Initialize databases in read-only mode for the web service
-    db = Database(read_only=True)
-    db.initialize()
-    db.close()
+    db = DatabaseOperations(read_only=True)
+    db.db.initialize()
+    db.db.close()
     logger.info("Database initialization complete")
     if not check_config():
         logger.error("Invalid configuration. Exiting.")

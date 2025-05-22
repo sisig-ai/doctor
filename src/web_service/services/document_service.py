@@ -12,7 +12,7 @@ from src.common.models import (
     SearchDocsResponse,
     SearchResult,
 )
-from src.lib.database import Database
+from src.lib.database.utils import deserialize_tags
 
 # Get logger for this module
 logger = get_logger(__name__)
@@ -201,26 +201,47 @@ async def search_docs(
         # Escape the query for SQL
         escaped_query = query.replace("'", "''")
 
-        # BM25 search query using the FTS extension's MATCH_BM25 function
-        bm25_sql = f"""
-        SELECT
-            p.id AS page_id,
-            p.url,
-            p.domain,
-            p.tags,
-            p.raw_text,
-            fts_main_pages.match_bm25(p.id, '{escaped_query}') AS bm25_score
-        FROM pages p
-        WHERE bm25_score IS NOT NULL {tag_condition_sql}
-        ORDER BY bm25_score DESC
-        LIMIT {max_results * 2}
-        """
+        # First check if the FTS function exists
+        try:
+            # Check if the fts_main_pages table exists
+            fts_table_exists = (
+                conn.execute(
+                    "SELECT count(*) FROM information_schema.tables WHERE table_name = 'fts_main_pages'"
+                ).fetchone()[0]
+                > 0
+            )
 
-        # Log the actual SQL being executed
-        logger.info(f"BM25 search SQL: {bm25_sql}")
-        bm25_results = conn.execute(bm25_sql).fetchall()
-        logger.info(f"Found {len(bm25_results)} results from BM25 search")
-        bm25_search_success = True
+            if fts_table_exists:
+                # BM25 search query using the FTS extension's MATCH_BM25 function
+                bm25_sql = f"""
+                SELECT
+                    p.id AS page_id,
+                    p.url,
+                    p.domain,
+                    p.tags,
+                    p.raw_text,
+                    fts_main_pages.match_bm25(p.id, '{escaped_query}') AS bm25_score
+                FROM pages p
+                WHERE bm25_score IS NOT NULL {tag_condition_sql}
+                ORDER BY bm25_score DESC
+                LIMIT {max_results * 2}
+                """
+
+                # Log the actual SQL being executed
+                logger.info(f"BM25 search SQL: {bm25_sql}")
+                bm25_results = conn.execute(bm25_sql).fetchall()
+                logger.info(f"Found {len(bm25_results)} results from BM25 search")
+                bm25_search_success = True
+            else:
+                logger.warning(
+                    "FTS table 'fts_main_pages' does not exist, falling back to simple text search"
+                )
+                bm25_search_success = False
+                bm25_results = []
+        except Exception as e:
+            logger.warning(f"BM25 search failed: {e}")
+            bm25_search_success = False
+            bm25_results = []
 
         # Process BM25 search results
         for row in bm25_results:
@@ -249,7 +270,7 @@ async def search_docs(
                 )
 
             # Get tags
-            result_tags = Database.deserialize_tags(tags_json)
+            result_tags = deserialize_tags(tags_json)
 
             # Combine with vector results or add as new
             if page_id in all_results:
@@ -379,7 +400,7 @@ async def list_doc_pages(
             DocPageSummary(
                 page_id=id,
                 domain=domain,
-                tags=Database.deserialize_tags(tags_json),
+                tags=deserialize_tags(tags_json),
                 crawl_date=crawl_date,
                 url=url,
             ),
@@ -494,7 +515,7 @@ async def list_tags(
         # Process each JSON array and extract individual tags
         for row in result:
             tags_json = row[0]
-            tags = Database.deserialize_tags(tags_json)
+            tags = deserialize_tags(tags_json)
             for tag in tags:
                 if tag:  # Ensure we don't add empty tags
                     unique_tags.add(tag)

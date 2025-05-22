@@ -9,7 +9,7 @@ from src.common.indexer import VectorIndexer
 from src.common.logger import get_logger
 from src.lib.chunker import TextChunker
 from src.lib.crawler import extract_page_text
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
 from src.lib.embedder import generate_embedding
 
 # Configure logging
@@ -44,7 +44,7 @@ async def process_crawl_result(
         page_text = extract_page_text(page_result)
 
         # Store the page in the database
-        db = Database()
+        db = DatabaseOperations()
         try:
             page_id = await db.store_page(
                 url=page_result.url,
@@ -53,14 +53,14 @@ async def process_crawl_result(
                 tags=tags,
             )
         finally:
-            db.close()
+            db.db.close()
 
         # Initialize components
         chunker = TextChunker()
 
         # Get a DuckDB connection for the vector indexer
-        db = Database()
-        duckdb_conn = db.connect()
+        db = DatabaseOperations()
+        duckdb_conn = db.db.ensure_connection()
         indexer = VectorIndexer(connection=duckdb_conn)
 
         # Split text into chunks
@@ -165,7 +165,7 @@ async def process_page_batch(
                 processed_page_ids.append(page_id)
 
                 # Update job progress
-                with Database() as db:
+                with DatabaseOperations() as db:
                     await db.update_job_status(
                         job_id=job_id,
                         status="running",

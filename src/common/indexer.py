@@ -7,7 +7,7 @@ from typing import Any
 import duckdb
 
 from src.common.config import DUCKDB_EMBEDDINGS_TABLE, VECTOR_SIZE
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -32,8 +32,8 @@ class VectorIndexer:
         if connection is not None:
             self.conn = connection
         else:
-            db = Database()
-            self.conn = db.connect()
+            db = DatabaseOperations()
+            self.conn = db.db.ensure_connection()
 
         # Ensure VSS extension is installed and loaded
         try:

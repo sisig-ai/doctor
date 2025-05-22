@@ -48,6 +48,18 @@ class DuckDBConnectionManager:
             ext_name: The name of the extension to load (e.g., 'fts', 'vss').
 
         """
+        # Check if the extension is already loaded
+        try:
+            result = conn.execute(
+                f"SELECT * FROM duckdb_loaded_extensions() WHERE name = '{ext_name}';"
+            ).fetchone()
+            if result:
+                logger.info(f"{ext_name.upper()} extension is already loaded.")
+                return
+        except Exception:
+            # If we can't check, proceed with loading
+            pass
+
         try:
             conn.execute(f"INSTALL {ext_name};")
             logger.info(
@@ -63,6 +75,7 @@ class DuckDBConnectionManager:
                 f"Unexpected error during {ext_name.upper()} install: {e_install_generic}, "
                 "proceeding to load.",
             )
+
         try:
             conn.execute(f"LOAD {ext_name};")
             logger.info(f"{ext_name.upper()} extension loaded for current connection.")
@@ -80,6 +93,11 @@ class DuckDBConnectionManager:
     def _load_extensions(self, conn: duckdb.DuckDBPyConnection) -> None:
         """Install (if necessary) and loads required DuckDB extensions (FTS, VSS)."""
         self._load_single_extension(conn, "fts")
+        try:
+            self.conn.execute("PRAGMA create_fts_index('pages', 'id', 'raw_text');")
+        except Exception as e:
+            if "already exists" not in str(e):
+                logger.warning("Failed to create FTS index for 'pages' table.")
         self._load_single_extension(conn, "vss")
 
     def connect(self) -> duckdb.DuckDBPyConnection:
@@ -331,35 +349,9 @@ class DuckDBConnectionManager:
                     logger.info(
                         "FTS table 'fts_main_pages' already exists, ensuring triggers.",
                     )
-                    # Still ensure triggers exist even if table exists
-                    trigger_exists_result = conn.execute(
-                        "SELECT name FROM sqlite_master "
-                        "WHERE type='trigger' AND name='fts_sync_pages'",
-                    ).fetchone()
-                    if not (trigger_exists_result is not None):
-                        conn.execute(
-                            """
-                        CREATE TRIGGER fts_sync_pages AFTER INSERT ON pages
-                        BEGIN
-                            INSERT INTO fts_main_pages (id, raw_text)
-                            VALUES (NEW.id, NEW.raw_text);
-                        END;
-                        """,
-                        )
-                        logger.info(
-                            "FTS insert sync trigger 'fts_sync_pages' created.",
-                        )
-                    conn.execute(
-                        """
-                    CREATE TRIGGER IF NOT EXISTS fts_delete_sync AFTER DELETE ON pages
-                    BEGIN
-                        DELETE FROM fts_main_pages WHERE id = OLD.id;
-                    END;
-                    """,
-                    )
-                    logger.info(
-                        "FTS delete sync trigger 'fts_delete_sync' created/verified.",
-                    )
+                    # Still ensure triggers exist even if table exists.
+                    # The _create_fts_objects function handles this.
+                    self._create_fts_objects(conn)
 
             except Exception as fts_err:  # pragma: no cover # noqa: BLE001
                 logger.warning(
@@ -422,6 +414,10 @@ class DuckDBConnectionManager:
 
         try:
             logger.info("Configuring and verifying VSS extension...")
+            # Check if the VSS extension is already loaded
+            # Ensure VSS extension is loaded using the helper method
+            self._load_single_extension(conn, "vss")
+
             try:
                 conn.execute("SET hnsw_enable_experimental_persistence = true;")
                 logger.info("Enabled experimental persistence for HNSW indexes.")
@@ -494,16 +490,19 @@ class DuckDBConnectionManager:
         logger.info(
             f"Initializing DuckDBConnectionManager (read_only={self.read_only})...",
         )
-        db_dir = pathlib.Path(DUCKDB_PATH).parent
-        try:
-            db_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e_mkdir:  # pragma: no cover
-            msg = f"Failed to create database directory {db_dir}: {e_mkdir}"
-            logger.exception(msg)
-            raise OSError(msg) from e_mkdir
+        # The directory creation is handled by ensure_connection -> connect
+        self.ensure_connection()
 
+        # Loading extensions is safe in read-only mode, so always do that
+        # We load both FTS and VSS extensions here to ensure search features work
+        try:
+            conn = self.ensure_connection()
+            self._load_extensions(conn)
+        except Exception as e:
+            logger.warning(f"Failed to load extensions in read-only mode: {e}")
+
+        # Only create tables and indexes in write mode
         if not self.read_only:
-            self.ensure_connection()
             self.ensure_tables()
             self.ensure_vss_extension()
         logger.info("DuckDBConnectionManager initialization complete.")

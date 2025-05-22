@@ -5,7 +5,7 @@ from rq import Worker
 
 from src.common.config import REDIS_URI, check_config
 from src.common.logger import get_logger
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
 
 # Get logger for this module
 logger = get_logger(__name__)
@@ -26,13 +26,13 @@ def main() -> int:
     # Initialize databases with write access
     try:
         logger.info("Initializing databases for the crawl worker...")
-        db = Database(read_only=False)
-        db.initialize()
+        db = DatabaseOperations(read_only=False)
+        db.db.initialize()
         logger.info("Database initialization completed successfully")
 
         # Double-check that the document_embeddings table exists
         # Reuse the connection from db
-        conn = db.conn
+        conn = db.db.conn
         if conn is None:
             logger.error("Failed to get DuckDB connection")
             return 1
@@ -52,7 +52,7 @@ def main() -> int:
             return 1
         logger.info("Verified document_embeddings table exists")
 
-        db.close()
+        db.db.close()
     except Exception as e:
         logger.error(f"Database initialization failed: {e!s}")
         return 1

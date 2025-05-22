@@ -13,14 +13,14 @@ def mock_processor_dependencies():
     extract_page_text_mock = MagicMock()
     extract_page_text_mock.return_value = "Extracted text content"
 
-    # Mock for Database class store_page method
+    # Mock for DatabaseOperations class store_page method
     store_page_mock = AsyncMock()
     store_page_mock.return_value = "test-page-123"
 
-    # Mock for Database class update_job_status method
+    # Mock for DatabaseOperations class update_job_status method
     update_job_status_mock = MagicMock()
 
-    # Create a Database class mock that can be both used directly
+    # Create a DatabaseOperations class mock that can be both used directly
     # and as a context manager
     database_mock = MagicMock(
         __enter__=lambda self: self,
@@ -68,7 +68,7 @@ async def test_process_crawl_result(
             mock_processor_dependencies["extract_page_text"],
         ),
         patch(
-            "src.common.processor.Database",
+            "src.common.processor.DatabaseOperations",
             return_value=mock_processor_dependencies["database"],
         ),
         patch("src.common.processor.TextChunker", mock_processor_dependencies["TextChunker"]),
@@ -116,7 +116,7 @@ async def test_process_crawl_result_with_errors(
             mock_processor_dependencies["extract_page_text"],
         ),
         patch(
-            "src.common.processor.Database",
+            "src.common.processor.DatabaseOperations",
             return_value=mock_processor_dependencies["database"],
         ),
         patch("src.common.processor.TextChunker", mock_processor_dependencies["TextChunker"]),
@@ -148,7 +148,7 @@ async def test_process_page_batch(mock_processor_dependencies):
     with (
         patch("src.common.processor.process_crawl_result", mock_process_result),
         patch(
-            "src.common.processor.Database",
+            "src.common.processor.DatabaseOperations",
             return_value=mock_processor_dependencies["database"],
         ),
     ):
@@ -184,7 +184,7 @@ async def test_process_page_batch_with_errors(mock_processor_dependencies):
     with (
         patch("src.common.processor.process_crawl_result", mock_process_result),
         patch(
-            "src.common.processor.Database",
+            "src.common.processor.DatabaseOperations",
             return_value=mock_processor_dependencies["database"],
         ),
     ):

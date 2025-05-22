@@ -5,7 +5,7 @@ Important: Should be disabled in production.
 from fastapi import APIRouter, HTTPException, Query
 
 from src.common.logger import get_logger
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
 from src.web_service.services.debug_bm25 import debug_bm25_search
 
 # Get logger for this module
@@ -32,8 +32,8 @@ async def debug_bm25_endpoint(
     logger.info(f"API: Running BM25 diagnostics with query: '{query}'")
 
     # Get a fresh connection for each request
-    db = Database(read_only=True)
-    conn = await db.connect_with_retry()
+    db = DatabaseOperations(read_only=True)
+    conn = db.db.ensure_connection()
 
     try:
         # Call the diagnostic function
@@ -43,4 +43,4 @@ async def debug_bm25_endpoint(
         logger.error(f"Error during BM25 diagnostics: {e!s}")
         raise HTTPException(status_code=500, detail=f"Diagnostic error: {e!s}")
     finally:
-        db.close()
+        db.db.close()

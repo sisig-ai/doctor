@@ -232,7 +232,7 @@ async def test_get_job_count():
     mock_conn = MagicMock()
     mock_conn.execute.return_value.fetchone.return_value = (42,)
 
-    with patch("src.lib.database.Database.connect", return_value=mock_conn):
+    with patch("src.web_service.services.job_service.duckdb.connect", return_value=mock_conn):
         # Call the function
         result = await get_job_count()
 
@@ -251,7 +251,7 @@ async def test_get_job_count_error():
     mock_conn = MagicMock()
     mock_conn.execute.side_effect = Exception("Database error")
 
-    with patch("src.lib.database.Database.connect", return_value=mock_conn):
+    with patch("src.web_service.services.job_service.duckdb.connect", return_value=mock_conn):
         # Call the function
         result = await get_job_count()
 
