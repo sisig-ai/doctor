@@ -50,127 +50,83 @@ class DuckDBConnectionManager:
         self.conn: duckdb.DuckDBPyConnection | None = None
         self.transaction_active: bool = False
 
-    def _load_single_extension(
-        self,
-        conn: duckdb.DuckDBPyConnection,
-        ext_name: str,
-    ) -> None:
-        """Install (if necessary) and load a single DuckDB extension.
+    def _load_extension(self, conn: duckdb.DuckDBPyConnection, ext_name: str) -> None:
+        """Install and load a DuckDB extension if not already loaded.
 
         Args:
             conn: The active DuckDB connection.
             ext_name: The name of the extension to load (e.g., 'fts', 'vss').
+
         Returns:
             None.
         """
-        # Check if the extension is already loaded
         try:
             result = conn.execute(CHECK_EXTENSION_LOADED_SQL.format(ext_name)).fetchone()
             if result:
-                logger.debug(f"{ext_name.upper()} extension is already loaded.")
+                logger.debug(f"{ext_name.upper()} extension already loaded")
                 return
         except Exception:
-            # If we can't check, proceed with loading
             pass
 
         try:
             conn.execute(INSTALL_EXTENSION_SQL.format(ext_name))
-            logger.debug(
-                f"{ext_name.upper()} extension installation attempted/verified.",
-            )
-        except duckdb.Error as e_install_db:  # More specific
-            logger.debug(
-                f"{ext_name.upper()} extension already installed or DB error during "
-                f"install, proceeding to load: {e_install_db}",
-            )
-        except Exception as e_install_generic:  # pragma: no cover # noqa: BLE001
-            logger.warning(
-                f"Unexpected error during {ext_name.upper()} install: {e_install_generic}, "
-                "proceeding to load.",
-            )
-
-        try:
             conn.execute(LOAD_EXTENSION_SQL.format(ext_name))
-            logger.debug(f"{ext_name.upper()} extension loaded for current connection.")
-        except duckdb.Error as e_load_db:  # More specific
-            logger.warning(
-                f"Could not load {ext_name.upper()} extension (DB error): {e_load_db}. "
-                "Functionality requiring this extension may fail or be slow.",
-            )
-        except Exception as e_load_generic:  # pragma: no cover # noqa: BLE001
-            logger.warning(
-                f"Unexpected error loading {ext_name.upper()} extension: {e_load_generic}. "
-                "Functionality may be impacted.",
-            )
+            logger.debug(f"{ext_name.upper()} extension loaded")
+        except duckdb.Error as e:
+            logger.warning(f"Failed to load {ext_name.upper()} extension: {e}")
+        except Exception as e:
+            logger.warning(f"Unexpected error loading {ext_name.upper()}: {e}")
 
     def _load_extensions(self, conn: duckdb.DuckDBPyConnection) -> None:
-        """Install (if necessary) and loads required DuckDB extensions (FTS, VSS).
+        """Load required DuckDB extensions (FTS, VSS).
 
         Args:
             conn: The active DuckDB connection.
+
         Returns:
             None.
         """
-        self._load_single_extension(conn, "fts")
-        self._load_single_extension(conn, "vss")
+        for ext in ["fts", "vss"]:
+            self._load_extension(conn, ext)
 
     def connect(self) -> duckdb.DuckDBPyConnection:
         """Establish and return a DuckDB connection.
 
         Args:
             None.
+
         Returns:
             duckdb.DuckDBPyConnection: An active DuckDB connection object.
+
         Raises:
-            IOError: For OS-level I/O errors during directory creation.
             duckdb.Error: For DuckDB-specific connection failures after retries.
+            Exception: For other unexpected errors during connection.
         """
-        data_dir_path = pathlib.Path(DATA_DIR)
-        db_file_path = pathlib.Path(DUCKDB_PATH)
-        max_retries = 3
-        retry_delay_seconds = 1
+        pathlib.Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+        db_path = pathlib.Path(DUCKDB_PATH)
 
-        try:
-            data_dir_path.mkdir(parents=True, exist_ok=True)
-        except OSError as e_mkdir:  # pragma: no cover
-            msg = f"Failed to create data directory {DATA_DIR}: {e_mkdir}"
-            logger.exception(msg)
-            raise OSError(msg) from e_mkdir
+        logger.debug(f"Connecting to DuckDB at {db_path}")
 
-        logger.debug(f"Connecting to DuckDB at {db_file_path}")
-
-        for attempt in range(max_retries):
+        for attempt in range(3):
             try:
-                self.conn = duckdb.connect(str(db_file_path), read_only=False)
-                self.conn.execute(TEST_CONNECTION_SQL).fetchone()  # Test connection
+                self.conn = duckdb.connect(str(db_path), read_only=False)
+                self.conn.execute(TEST_CONNECTION_SQL).fetchone()
                 self._load_extensions(self.conn)
-                logger.debug(f"Successfully connected to DuckDB at {db_file_path}")
+                logger.debug(f"Connected to DuckDB at {db_path}")
                 return self.conn
-            except duckdb.Error as e_db:
-                logger.warning(
-                    f"Attempt {attempt + 1}/{max_retries} failed to connect to DuckDB at "
-                    f"{db_file_path}: {e_db}"
-                )
-                if attempt < max_retries - 1:
-                    logger.info(f"Retrying in {retry_delay_seconds} second(s)...")
-                    time.sleep(retry_delay_seconds)
+            except duckdb.Error as e:
+                logger.warning(f"Connection attempt {attempt + 1}/3 failed: {e}")
+                if attempt < 2:
+                    time.sleep(1)
                 else:
-                    logger.error(f"All {max_retries} attempts to connect to DuckDB failed.")
                     self.conn = None
                     raise
-            except Exception as e_other:  # pragma: no cover
-                logger.exception(
-                    f"An unexpected error occurred connecting to DuckDB at {db_file_path}: {e_other}",
-                )
+            except Exception as e:
+                logger.exception(f"Unexpected error connecting to DuckDB: {e}")
                 self.conn = None
                 raise
-        # This line should ideally not be reached if logic is correct,
-        # but as a fallback:
-        msg = "Failed to connect after multiple retries, and no exception was re-raised."
-        logger.critical(msg)
-        if self.conn is None:  # Should be set by now, but defensive
-            raise duckdb.Error(msg)  # type: ignore[misc]
-        return self.conn  # Should not be None if loop exited cleanly. Compiler hint.
+
+        raise duckdb.Error("Failed to connect after retries")
 
     def close(self) -> None:
         """Close the database connection if it is open.
@@ -216,23 +172,21 @@ class DuckDBConnectionManager:
                 self.conn = None
 
     def ensure_connection(self) -> duckdb.DuckDBPyConnection:
-        """Ensure an active database connection exists, creating one if necessary.
+        """Ensure an active database connection exists.
 
         Args:
             None.
+
         Returns:
             duckdb.DuckDBPyConnection: An active DuckDB connection object.
         """
-        if self.conn is not None:
+        if self.conn:
             try:
                 self.conn.execute(TEST_CONNECTION_SQL).fetchone()
+                return self.conn
             except (duckdb.Error, AttributeError) as e:
-                logger.warning(
-                    f"Existing connection is not usable ({e}), attempting to reconnect.",
-                )
+                logger.warning(f"Connection unusable ({e}), reconnecting")
                 self.conn = None
-            else:
-                return self.conn  # Connection is alive and usable (TRY300 fixed)
 
         return self.connect()
 
@@ -295,6 +249,12 @@ class DuckDBConnectionManager:
 
         Args:
             None.
+
+        Returns:
+            None.
+
+        Args:
+            None.
         Returns:
             None.
         """
@@ -311,39 +271,36 @@ class DuckDBConnectionManager:
             raise
 
     def _create_hnsw_index(self, conn: duckdb.DuckDBPyConnection) -> None:
-        """Create HNSW index on document_embeddings.embedding.
+        """Create HNSW index on document_embeddings.embedding if it doesn't exist.
 
         Args:
             conn: The active DuckDB connection.
+
         Returns:
             None.
         """
         try:
-            index_exists = False
-            try:
-                index_exists_result = conn.execute(CHECK_HNSW_INDEX_SQL).fetchone()
-                index_exists = index_exists_result[0] > 0 if index_exists_result else False
-            except duckdb.Error:  # More specific
-                logger.debug(
-                    "'duckdb_indexes()' function not available or errored, "
-                    "will attempt to create HNSW index regardless.",
-                )
+            result = conn.execute(CHECK_HNSW_INDEX_SQL).fetchone()
+            if result and result[0] > 0:
+                logger.debug("HNSW index already exists")
+                return
+        except duckdb.Error:
+            logger.debug("Cannot check existing indexes, attempting creation")
 
-            if index_exists:
-                logger.debug(
-                    "HNSW index 'hnsw_index_on_embeddings' already exists.",
-                )
-            else:
-                conn.execute(CREATE_HNSW_INDEX_SQL)
-                logger.info("Created HNSW index 'hnsw_index_on_embeddings'.")
-        except Exception as e_hnsw:  # pragma: no cover # noqa: BLE001
-            logger.warning(
-                f"Failed to create HNSW index: {e_hnsw}. "
-                "Vector searches will work but may be slower.",
-            )
+        try:
+            conn.execute(CREATE_HNSW_INDEX_SQL)
+            logger.info("Created HNSW index")
+        except Exception as e:
+            logger.warning(f"Failed to create HNSW index: {e}")
 
     def ensure_vss_extension(self) -> None:
         """Ensure VSS extension is functional and document_embeddings table exists with HNSW index.
+
+        Args:
+            None.
+
+        Returns:
+            None.
 
         Args:
             None.
@@ -356,8 +313,7 @@ class DuckDBConnectionManager:
         try:
             logger.debug("Configuring and verifying VSS extension...")
             # Check if the VSS extension is already loaded
-            # Ensure VSS extension is loaded using the helper method
-            self._load_single_extension(conn, "vss")
+            self._load_extension(conn, "vss")
 
             try:
                 conn.execute(SET_HNSW_PERSISTENCE_SQL)
@@ -421,6 +377,12 @@ class DuckDBConnectionManager:
 
         Args:
             None.
+
+        Returns:
+            None.
+
+        Args:
+            None.
         Returns:
             None.
         """
@@ -428,9 +390,7 @@ class DuckDBConnectionManager:
         # The directory creation is handled by ensure_connection -> connect
         conn = self.ensure_connection()
 
-        # Always load extensions
-        self._load_single_extension(conn, "fts")
-        self._load_single_extension(conn, "vss")
+        self._load_extensions(conn)
 
         # Always ensure tables and VSS extension are set up
         self.ensure_tables()
@@ -443,6 +403,12 @@ class DuckDBConnectionManager:
 
         Args:
             None.
+
+        Returns:
+            DuckDBConnectionManager: The context manager instance.
+
+        Args:
+            None.
         Returns:
             DuckDBConnectionManager: The context manager instance.
         """
@@ -452,15 +418,16 @@ class DuckDBConnectionManager:
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
+        _exc_val: BaseException | None,
+        _exc_tb: TracebackType | None,
     ) -> None:
         """Exit the runtime context related to this object. Closes connection.
 
         Args:
             exc_type: Exception type if raised in context, else None.
-            exc_val: Exception value if raised in context, else None.
-            exc_tb: Traceback if exception raised, else None.
+            _exc_val: Exception value if raised in context, else None.
+            _exc_tb: Traceback if exception raised, else None.
+
         Returns:
             None.
         """
