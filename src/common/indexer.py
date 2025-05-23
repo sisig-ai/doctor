@@ -7,7 +7,7 @@ from typing import Any
 import duckdb
 
 from src.common.config import DUCKDB_EMBEDDINGS_TABLE, VECTOR_SIZE
-from src.lib.database import Database
+from src.lib.database import DuckDBConnectionManager  # Changed import
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -31,20 +31,28 @@ class VectorIndexer:
         self._own_connection = connection is None
         if connection is not None:
             self.conn = connection
+            # If connection is provided, assume VSS is loaded or handled by the provider.
+            # Alternatively, could attempt a load here too, but might be redundant.
+            try:
+                # Attempt to load VSS if an external connection is provided, just in case.
+                # This might be better handled by the provider of the connection.
+                self.conn.execute("LOAD vss;")
+                logger.debug("VSS extension loaded on provided connection (attempted).")
+            except Exception as e_load_vss:
+                logger.debug(
+                    f"Could not load VSS on provided connection (may already be loaded or unavailable): {e_load_vss!s}"
+                )
         else:
-            db = Database()
-            self.conn = db.connect()
+            # Create and own a new connection using DuckDBConnectionManager
+            conn_manager = DuckDBConnectionManager()
+            self.conn = (
+                conn_manager.connect()
+            )  # .connect() handles INSTALL and LOAD of extensions like VSS
+            logger.debug(
+                "Created and connected new DuckDB connection via DuckDBConnectionManager for VectorIndexer."
+            )
 
-        # Ensure VSS extension is installed and loaded
-        try:
-            self.conn.execute("INSTALL vss;")
-            logger.debug("VSS extension installed")
-        except Exception as e:
-            # If extension is already installed, this will fail, but that's okay
-            logger.debug(f"VSS extension installation attempt: {e!s}")
-
-        self.conn.execute("LOAD vss;")
-        logger.debug("VSS extension loaded")
+        # The explicit INSTALL and LOAD vss calls are removed as conn_manager.connect() handles them.
 
         self.table_name = table_name or DUCKDB_EMBEDDINGS_TABLE
         logger.debug(f"Initialized VectorIndexer with table={self.table_name}")

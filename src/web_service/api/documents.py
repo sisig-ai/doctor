@@ -10,7 +10,7 @@ from src.common.models import (
     ListTagsResponse,
     SearchDocsResponse,
 )
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
 from src.web_service.services.document_service import (
     get_doc_page,
     list_doc_pages,
@@ -50,23 +50,28 @@ async def search_docs_endpoint(
         f"API: Searching docs with query: '{query}', tags: {tags}, max_results: {max_results}, return_full_document_text: {return_full_document_text}",
     )
 
+    db_ops = DatabaseOperations()
     try:
-        # Get a fresh DuckDB connection
-        db = Database(read_only=True)
-        conn = await db.connect_with_retry()
-        try:
+        # Use DuckDBConnectionManager as a context manager
+        with db_ops.db as conn_manager:
+            actual_conn = conn_manager.conn
+            if not actual_conn:
+                logger.error("Failed to obtain database connection for search_docs.")
+                raise HTTPException(status_code=500, detail="Database connection error.")
             # Call the service function
-            response = await search_docs(conn, query, tags, max_results, return_full_document_text)
+            response = await search_docs(
+                actual_conn, query, tags, max_results, return_full_document_text
+            )
             return response
-        except Exception as db_error:
-            logger.error(f"Database error during search: {db_error!s}")
-            raise HTTPException(status_code=500, detail=f"Database error: {db_error!s}")
-        finally:
-            # Close DuckDB connection
-            db.close()
-    except Exception as e:
+    except HTTPException:  # Re-raise HTTP exceptions directly
+        raise
+    except (
+        Exception
+    ) as e:  # Catch other exceptions (like DB errors from service or connection issues)
         logger.error(f"Error searching documents: {e!s}")
+        # Log the specific error, but return a generic server error to the client
         raise HTTPException(status_code=500, detail=f"Search error: {e!s}")
+    # No finally block to close connection, context manager handles it.
 
 
 @router.get("/list_doc_pages", response_model=ListDocPagesResponse, operation_id="list_doc_pages")
@@ -86,19 +91,22 @@ async def list_doc_pages_endpoint(
     """
     logger.info(f"API: Listing document pages (page={page}, tags={tags})")
 
-    # Get a fresh connection for each request
-    db = Database(read_only=True)
-    conn = await db.connect_with_retry()
-
+    db_ops = DatabaseOperations()
     try:
-        # Call the service function
-        response = await list_doc_pages(conn, page, tags)
-        return response
+        with db_ops.db as conn_manager:
+            actual_conn = conn_manager.conn
+            if not actual_conn:
+                logger.error("Failed to obtain database connection for list_doc_pages.")
+                raise HTTPException(status_code=500, detail="Database connection error.")
+            # Call the service function
+            response = await list_doc_pages(actual_conn, page, tags)
+            return response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing document pages: {e!s}")
         raise HTTPException(status_code=500, detail=f"Database error: {e!s}")
-    finally:
-        db.close()
+    # No finally block to close connection
 
 
 @router.get("/get_doc_page", response_model=GetDocPageResponse, operation_id="get_doc_page")
@@ -123,24 +131,25 @@ async def get_doc_page_endpoint(
     """
     logger.info(f"API: Retrieving document page {page_id} (lines {starting_line}-{ending_line})")
 
-    # Get a fresh connection for each request
-    db = Database(read_only=True)
-    conn = await db.connect_with_retry()
-
+    db_ops = DatabaseOperations()
     try:
-        # Call the service function
-        response = await get_doc_page(conn, page_id, starting_line, ending_line)
-        if response is None:
-            raise HTTPException(status_code=404, detail=f"Page {page_id} not found")
-        return response
+        with db_ops.db as conn_manager:
+            actual_conn = conn_manager.conn
+            if not actual_conn:
+                logger.error("Failed to obtain database connection for get_doc_page.")
+                raise HTTPException(status_code=500, detail="Database connection error.")
+            # Call the service function
+            response = await get_doc_page(actual_conn, page_id, starting_line, ending_line)
+            if response is None:
+                raise HTTPException(status_code=404, detail=f"Page {page_id} not found")
+            return response
     except HTTPException:
         # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
         logger.error(f"Error retrieving document page {page_id}: {e!s}")
         raise HTTPException(status_code=500, detail=f"Database error: {e!s}")
-    finally:
-        db.close()
+    # No finally block to close connection
 
 
 @router.get("/list_tags", response_model=ListTagsResponse, operation_id="list_tags")
@@ -163,16 +172,19 @@ async def list_tags_endpoint(
         f"API: Listing all unique document tags{' with filter: ' + search_substring if search_substring else ''}",
     )
 
-    # Get a fresh connection for each request
-    db = Database(read_only=True)
-    conn = await db.connect_with_retry()
-
+    db_ops = DatabaseOperations()
     try:
-        # Call the service function
-        response = await list_tags(conn, search_substring)
-        return response
+        with db_ops.db as conn_manager:
+            actual_conn = conn_manager.conn
+            if not actual_conn:
+                logger.error("Failed to obtain database connection for list_tags.")
+                raise HTTPException(status_code=500, detail="Database connection error.")
+            # Call the service function
+            response = await list_tags(actual_conn, search_substring)
+            return response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing document tags: {e!s}")
         raise HTTPException(status_code=500, detail=f"Database error: {e!s}")
-    finally:
-        db.close()
+    # No finally block to close connection

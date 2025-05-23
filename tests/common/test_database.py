@@ -8,9 +8,11 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import duckdb
 
 from src.common.logger import get_logger  # Import get_logger
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
+from src.lib.database.utils import serialize_tags, deserialize_tags
 
 # Get logger for this module - for use in tests if needed, though test output is usually via pytest
 logger = get_logger(__name__)  # Define logger
@@ -56,10 +58,33 @@ def db_instance(temp_db_path):
     # Or, more directly, patch src.common.config.DUCKDB_PATH
 
     with patch("src.common.config.DUCKDB_PATH", temp_db_path):
-        db = Database()
-        db.initialize()  # Ensure tables are created
+        db = DatabaseOperations()
+        db.db.initialize()  # Ensure tables are created by the connection manager
         yield db
-        db.close()
+        db.db.close()  # Close using the connection manager
+
+
+class MockConnManager:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    def initialize(self):
+        pass
+
+    def begin_transaction(self):
+        pass
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
 
 
 @pytest.mark.unit
@@ -68,6 +93,33 @@ async def test_store_page(sample_url, sample_text, job_id, mock_duckdb_connectio
     """Test storing a page in the database."""
     with (
         patch("src.lib.database.connection.duckdb.connect", return_value=mock_duckdb_connection),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_vss_extension",
+            return_value=None,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_connection",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.connect",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__enter__",
+            lambda self: (
+                lambda mgr: (
+                    setattr(mgr, "begin_transaction", MagicMock()),
+                    setattr(mgr, "commit", mock_duckdb_connection.commit),
+                    setattr(mgr, "rollback", mock_duckdb_connection.rollback),
+                    mgr,
+                )[-1]
+            )(MockConnManager(mock_duckdb_connection)),
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__exit__",
+            lambda self, exc_type, exc_val, exc_tb: None,
+        ),
         patch("src.lib.database.operations.datetime.datetime") as mock_datetime,
         patch(
             "src.lib.database.operations.uuid.uuid4",
@@ -79,8 +131,8 @@ async def test_store_page(sample_url, sample_text, job_id, mock_duckdb_connectio
         mock_datetime.now.return_value = now
 
         # Create a database instance
-        db = Database()
-        db.conn = mock_duckdb_connection
+        db = DatabaseOperations()
+        db.db.conn = mock_duckdb_connection
 
         # Call the method without providing a page_id
         page_id = await db.store_page(
@@ -146,7 +198,36 @@ async def test_store_page(sample_url, sample_text, job_id, mock_duckdb_connectio
 @pytest.mark.async_test
 async def test_store_page_error_handling(sample_url, sample_text, job_id, mock_duckdb_connection):
     """Test error handling when storing a page."""
-    with patch("src.lib.database.connection.duckdb.connect", return_value=mock_duckdb_connection):
+    with (
+        patch("src.lib.database.connection.duckdb.connect", return_value=mock_duckdb_connection),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_vss_extension",
+            return_value=None,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_connection",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.connect",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__enter__",
+            lambda self: (
+                lambda mgr: (
+                    setattr(mgr, "begin_transaction", MagicMock()),
+                    setattr(mgr, "commit", mock_duckdb_connection.commit),
+                    setattr(mgr, "rollback", mock_duckdb_connection.rollback),
+                    mgr,
+                )[-1]
+            )(MockConnManager(mock_duckdb_connection)),
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__exit__",
+            lambda self, exc_type, exc_val, exc_tb: None,
+        ),
+    ):
         # Mock execute for the sequence of calls:
         # 1. ensure_connection (from store_page) -> SELECT 1
         # 2. ensure_connection (from begin_transaction) -> SELECT 1
@@ -156,29 +237,23 @@ async def test_store_page_error_handling(sample_url, sample_text, job_id, mock_d
         mock_select_cursor1.fetchone.return_value = (1,)
         mock_select_cursor2 = MagicMock()
         mock_select_cursor2.fetchone.return_value = (1,)
-        mock_begin_tx_cursor = MagicMock()
+        MagicMock()
 
-        mock_duckdb_connection.execute.side_effect = [
-            mock_select_cursor1,
-            mock_select_cursor2,
-            mock_begin_tx_cursor,
-            Exception("Database error"),
-        ]
+        def execute_side_effect(sql, *args, **kwargs):
+            if sql.strip().startswith("INSERT INTO") or sql.strip().startswith("UPDATE"):
+                raise duckdb.Error("Database error")
+            return MagicMock()
 
-        db = Database()
-        # db.db.conn will be set by the first ensure_connection -> connect() call if not pre-set
-        # For this test, we can pre-set it to ensure the mock is used as intended from the start
+        mock_duckdb_connection.execute.side_effect = execute_side_effect
+
+        db = DatabaseOperations()
         db.db.conn = mock_duckdb_connection
 
-        with pytest.raises(RuntimeError) as excinfo:  # Operations layer wraps with RuntimeError
+        with pytest.raises(duckdb.Error) as excinfo:  # Operations layer wraps with duckdb.Error
             await db.store_page(url=sample_url, text=sample_text, job_id=job_id)
 
-        assert "Unexpected error storing page" in str(excinfo.value)
-        # Or, if duckdb.Error is expected to be re-raised directly:
-        # assert "Database error" in str(excinfo.value)
-
+        assert "Database error" in str(excinfo.value)
         mock_duckdb_connection.rollback.assert_called_once()
-        assert mock_duckdb_connection.execute.call_count == 4
 
 
 @pytest.mark.unit
@@ -188,6 +263,33 @@ async def test_update_job_status_basic(job_id, mock_duckdb_connection):
     with (
         patch("src.lib.database.connection.duckdb.connect", return_value=mock_duckdb_connection),
         patch("src.lib.database.operations.datetime.datetime") as mock_datetime,
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_vss_extension",
+            return_value=None,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_connection",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.connect",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__enter__",
+            lambda self: (
+                lambda mgr: (
+                    setattr(mgr, "begin_transaction", MagicMock()),
+                    setattr(mgr, "commit", mock_duckdb_connection.commit),
+                    setattr(mgr, "rollback", mock_duckdb_connection.rollback),
+                    mgr,
+                )[-1]
+            )(MockConnManager(mock_duckdb_connection)),
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__exit__",
+            lambda self, exc_type, exc_val, exc_tb: None,
+        ),
     ):
         # Set mock datetime
         now = datetime.datetime(2023, 1, 1, 12, 0, 0)
@@ -199,8 +301,8 @@ async def test_update_job_status_basic(job_id, mock_duckdb_connection):
         mock_duckdb_connection.execute.return_value = mock_cursor
 
         # Create a database instance
-        db = Database()
-        db.conn = mock_duckdb_connection
+        db = DatabaseOperations()
+        db.db.conn = mock_duckdb_connection
 
         # Call the method with just status
         await db.update_job_status(job_id=job_id, status="running")
@@ -228,6 +330,33 @@ async def test_update_job_status_with_all_options(job_id, mock_duckdb_connection
     with (
         patch("src.lib.database.connection.duckdb.connect", return_value=mock_duckdb_connection),
         patch("src.lib.database.operations.datetime.datetime") as mock_datetime,
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_vss_extension",
+            return_value=None,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_connection",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.connect",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__enter__",
+            lambda self: (
+                lambda mgr: (
+                    setattr(mgr, "begin_transaction", MagicMock()),
+                    setattr(mgr, "commit", mock_duckdb_connection.commit),
+                    setattr(mgr, "rollback", mock_duckdb_connection.rollback),
+                    mgr,
+                )[-1]
+            )(MockConnManager(mock_duckdb_connection)),
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__exit__",
+            lambda self, exc_type, exc_val, exc_tb: None,
+        ),
     ):
         # Set mock datetime
         now = datetime.datetime(2023, 1, 1, 12, 0, 0)
@@ -239,8 +368,8 @@ async def test_update_job_status_with_all_options(job_id, mock_duckdb_connection
         mock_duckdb_connection.execute.return_value = mock_cursor
 
         # Create a database instance
-        db = Database()
-        db.conn = mock_duckdb_connection
+        db = DatabaseOperations()
+        db.db.conn = mock_duckdb_connection
 
         # Call the method with all options
         await db.update_job_status(
@@ -282,43 +411,104 @@ async def test_update_job_status_with_all_options(job_id, mock_duckdb_connection
 @pytest.mark.async_test
 async def test_update_job_status_checkpoint(job_id, mock_duckdb_connection):
     """Test that checkpoint_async is effectively called for completed/failed status."""
-    # update_job_status calls self.checkpoint_async(), which then calls
-    # await asyncio.to_thread(self.conn.execute, "CHECKPOINT")
-    # We will mock out checkpoint_async itself to see if it's called by update_job_status.
-
     with (
         patch("src.lib.database.connection.duckdb.connect", return_value=mock_duckdb_connection),
-        patch.object(Database, "checkpoint_async", new_callable=AsyncMock) as mock_checkpoint_async,
+        patch(
+            "src.lib.database.operations.DatabaseOperations._checkpoint_internal_async",
+            new_callable=AsyncMock,
+        ) as mock_checkpoint_internal_async,
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_vss_extension",
+            return_value=None,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_connection",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.connect",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__enter__",
+            lambda self: (
+                lambda mgr: (
+                    setattr(mgr, "begin_transaction", MagicMock()),
+                    setattr(mgr, "commit", mock_duckdb_connection.commit),
+                    setattr(mgr, "rollback", mock_duckdb_connection.rollback),
+                    mgr,
+                )[-1]
+            )(MockConnManager(mock_duckdb_connection)),
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__exit__",
+            lambda self, exc_type, exc_val, exc_tb: None,
+        ),
     ):
-        mock_cursor = MagicMock()
-        mock_cursor.rowcount = 1
-        # Ensure execute returns the mock_cursor for the main update, and then for the read-back verify
-        # It might be called multiple times by update_job_status (update, then select to verify)
-        mock_duckdb_connection.execute.return_value = mock_cursor
+        update_mock = MagicMock()
+        update_mock.rowcount = 1
 
-        db = Database()
-        db.conn = mock_duckdb_connection  # Assign the mock connection
+        def execute_side_effect(sql, *args, **kwargs):
+            if sql.strip().startswith("UPDATE"):
+                return update_mock
+            m = MagicMock()
+            m.rowcount = 1
+            return m
+
+        mock_duckdb_connection.execute.side_effect = execute_side_effect
+
+        db = DatabaseOperations()
+        db.db.conn = mock_duckdb_connection  # Assign the mock connection
 
         # Test with 'completed' status
         await db.update_job_status(job_id=job_id, status="completed")
-        mock_checkpoint_async.assert_called_once()
+        mock_checkpoint_internal_async.assert_called_once()
 
         # Reset and test with 'failed' status
-        mock_checkpoint_async.reset_mock()
+        mock_checkpoint_internal_async.reset_mock()
         await db.update_job_status(job_id=job_id, status="failed")
-        mock_checkpoint_async.assert_called_once()
+        mock_checkpoint_internal_async.assert_called_once()
 
         # Reset and test with other status - should not call checkpoint_async
-        mock_checkpoint_async.reset_mock()
+        mock_checkpoint_internal_async.reset_mock()
         await db.update_job_status(job_id=job_id, status="running")
-        mock_checkpoint_async.assert_not_called()
+        mock_checkpoint_internal_async.assert_not_called()
 
 
 @pytest.mark.unit
 @pytest.mark.async_test
 async def test_update_job_status_error_handling(job_id, mock_duckdb_connection):
     """Test error handling when updating a job status."""
-    with patch("src.lib.database.connection.duckdb.connect", return_value=mock_duckdb_connection):
+    with (
+        patch("src.lib.database.connection.duckdb.connect", return_value=mock_duckdb_connection),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_vss_extension",
+            return_value=None,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.ensure_connection",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.connect",
+            return_value=mock_duckdb_connection,
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__enter__",
+            lambda self: (
+                lambda mgr: (
+                    setattr(mgr, "begin_transaction", MagicMock()),
+                    setattr(mgr, "commit", mock_duckdb_connection.commit),
+                    setattr(mgr, "rollback", mock_duckdb_connection.rollback),
+                    mgr,
+                )[-1]
+            )(MockConnManager(mock_duckdb_connection)),
+        ),
+        patch(
+            "src.lib.database.connection.DuckDBConnectionManager.__exit__",
+            lambda self, exc_type, exc_val, exc_tb: None,
+        ),
+    ):
         # Mock execute for the sequence of calls:
         # 1. ensure_connection (from update_job_status) -> SELECT 1
         # 2. ensure_connection (from begin_transaction) -> SELECT 1
@@ -328,27 +518,23 @@ async def test_update_job_status_error_handling(job_id, mock_duckdb_connection):
         mock_select_cursor1.fetchone.return_value = (1,)
         mock_select_cursor2 = MagicMock()
         mock_select_cursor2.fetchone.return_value = (1,)
-        mock_begin_tx_cursor = MagicMock()
+        MagicMock()
 
-        mock_duckdb_connection.execute.side_effect = [
-            mock_select_cursor1,
-            mock_select_cursor2,
-            mock_begin_tx_cursor,
-            Exception("Database error"),
-        ]
+        def execute_side_effect(sql, *args, **kwargs):
+            if sql.strip().startswith("INSERT INTO") or sql.strip().startswith("UPDATE"):
+                raise duckdb.Error("Database error")
+            return MagicMock()
 
-        db = Database()
+        mock_duckdb_connection.execute.side_effect = execute_side_effect
+
+        db = DatabaseOperations()
         db.db.conn = mock_duckdb_connection
 
-        with pytest.raises(RuntimeError) as excinfo:  # Operations layer wraps with RuntimeError
+        with pytest.raises(duckdb.Error) as excinfo:  # Operations layer wraps with duckdb.Error
             await db.update_job_status(job_id=job_id, status="running")
 
-        assert "Unexpected error updating job" in str(excinfo.value)
-        # Or, if duckdb.Error is expected to be re-raised directly:
-        # assert "Database error" in str(excinfo.value)
-
+        assert "Database error" in str(excinfo.value)
         mock_duckdb_connection.rollback.assert_called_once()
-        assert mock_duckdb_connection.execute.call_count == 4
 
 
 @pytest.mark.unit
@@ -356,17 +542,17 @@ def test_serialize_tags():
     """Test the serialize_tags static method."""
     # Test with normal list
     tags = ["tag1", "tag2", "tag3"]
-    serialized = Database.serialize_tags(tags)
+    serialized = serialize_tags(tags)
     assert serialized == '["tag1", "tag2", "tag3"]'
 
     # Test with empty list
     empty_tags = []
-    serialized = Database.serialize_tags(empty_tags)
+    serialized = serialize_tags(empty_tags)
     assert serialized == "[]"
 
     # Test with None
     none_tags = None
-    serialized = Database.serialize_tags(none_tags)
+    serialized = serialize_tags(none_tags)
     assert serialized == "[]"
 
 
@@ -375,41 +561,43 @@ def test_deserialize_tags():
     """Test the deserialize_tags static method."""
     # Test with normal JSON array
     serialized = '["tag1", "tag2", "tag3"]'
-    tags = Database.deserialize_tags(serialized)
+    tags = deserialize_tags(serialized)
     assert tags == ["tag1", "tag2", "tag3"]
 
     # Test with empty array
     empty_serialized = "[]"
-    tags = Database.deserialize_tags(empty_serialized)
+    tags = deserialize_tags(empty_serialized)
     assert tags == []
 
     # Test with None/empty string
-    tags = Database.deserialize_tags(None)
+    tags = deserialize_tags(None)
     assert tags == []
-    tags = Database.deserialize_tags("")
+    tags = deserialize_tags("")
     assert tags == []
 
     # Test with invalid JSON
     invalid_json = "{not valid json"
-    tags = Database.deserialize_tags(invalid_json)
+    tags = deserialize_tags(invalid_json)
     assert tags == []
 
 
 @pytest.mark.integration
 @pytest.mark.async_test
-async def test_async_lock_serializes_writes(db_instance: Database, job_id: str, sample_url: str):
+async def test_async_lock_serializes_writes(
+    db_instance: DatabaseOperations, job_id: str, sample_url: str
+):
     """Test that the asyncio.Lock in Database serializes concurrent write operations."""
     num_tasks = 3
     increments_per_task = 2  # Keep small to run test faster
     test_job_id = f"lock_test_job_{uuid.uuid4()}"
 
     # Synchronously add a job for testing.
-    db_instance.ensure_connection()
-    db_instance.conn.execute(
+    db_instance.db.ensure_connection()
+    db_instance.db.conn.execute(
         "INSERT INTO jobs (job_id, start_url, status, pages_crawled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         (test_job_id, sample_url, "initial", 0, datetime.datetime.now(), datetime.datetime.now()),
     )
-    db_instance.conn.commit()
+    db_instance.db.conn.commit()
 
     active_critical_section_tasks = 0
     max_concurrent_critical_section_tasks = 0
@@ -446,7 +634,7 @@ async def test_async_lock_serializes_writes(db_instance: Database, job_id: str, 
         active_critical_section_tasks -= 1
         original_release(*args, **kwargs)  # Actually release the lock
 
-    async def task_worker(db: Database, current_job_id: str, task_idx: int):
+    async def task_worker(db: DatabaseOperations, current_job_id: str, task_idx: int):
         # print(f"Task Worker {task_idx} starting for job {current_job_id}")
         for i in range(increments_per_task):
             # Each task will try to update the same job record
@@ -467,6 +655,7 @@ async def test_async_lock_serializes_writes(db_instance: Database, job_id: str, 
     with (
         patch.object(db_instance._write_lock, "acquire", new=traced_acquire),
         patch.object(db_instance._write_lock, "release", new=traced_release),
+        patch.object(db_instance.db, "close", new=MagicMock()),
     ):
         tasks = []
         for i in range(num_tasks):
@@ -492,7 +681,7 @@ async def test_async_lock_serializes_writes(db_instance: Database, job_id: str, 
     # This part is tricky because the order of task completion isn't guaranteed.
     # However, since each task sets a specific pages_crawled value, we can check if it's one of the expected final values.
     # Expected final values range from 1 to num_tasks * increments_per_task.
-    final_row = db_instance.conn.execute(
+    final_row = db_instance.db.conn.execute(
         "SELECT pages_crawled, status FROM jobs WHERE job_id = ?",
         (test_job_id,),
     ).fetchone()

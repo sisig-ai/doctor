@@ -13,7 +13,7 @@ from src.common.models import (
     FetchUrlResponse,
     JobProgressResponse,
 )
-from src.lib.database import Database
+from src.lib.database import DatabaseOperations
 from src.web_service.services.job_service import (
     fetch_url,
     get_job_count,
@@ -81,39 +81,46 @@ async def job_progress_endpoint(
     logger.info(f"Starting check loop for job {job_id} (max_attempts={max_attempts})")
     while attempts < max_attempts:
         attempts += 1
-        conn = None
+        db_ops = DatabaseOperations()  # Instantiate inside the loop
 
         try:
-            # Get a fresh read-only connection each time
-            db = Database(read_only=True)
-            conn = await db.connect_with_retry()
-            logger.info(f"Established fresh read-only connection to database (attempt {attempts})")
+            with db_ops.db as conn_manager:  # Use DuckDBConnectionManager as context manager
+                actual_conn = conn_manager.conn
+                if not actual_conn:
+                    # This case should ideally be handled by DuckDBConnectionManager.connect() raising an error
+                    logger.error(
+                        f"Attempt {attempts}: Failed to obtain DB connection from manager for job {job_id}."
+                    )
+                    if attempts >= max_attempts:
+                        raise HTTPException(
+                            status_code=500, detail="Database connection error after retries."
+                        )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue  # To next attempt
 
-            # Call the service function
-            result = await get_job_progress(conn, job_id)
-
-            if not result:
-                # Job not found on this attempt
-                logger.warning(
-                    f"Job {job_id} not found (attempt {attempts}/{max_attempts}). Retrying in {retry_delay}s...",
+                logger.info(
+                    f"Established fresh connection to database (attempt {attempts}) for job {job_id}"
                 )
-                # Close connection before sleeping
-                if conn:
-                    conn.close()
-                    conn = None  # Ensure we get a fresh one next iteration
 
-                # If this was the last attempt, break the loop to raise 404 outside
-                if attempts >= max_attempts:
-                    logger.warning(f"Job {job_id} not found after {max_attempts} attempts.")
-                    break  # Exit the while loop
+                # Call the service function
+                result = await get_job_progress(actual_conn, job_id)
 
-                # Wait before the next attempt
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-                continue  # Go to next iteration of the while loop
+                if not result:
+                    # Job not found on this attempt
+                    logger.warning(
+                        f"Job {job_id} not found (attempt {attempts}/{max_attempts}). Retrying in {retry_delay}s...",
+                    )
+                    # Connection is closed by conn_manager context exit
+                    if attempts >= max_attempts:
+                        logger.warning(f"Job {job_id} not found after {max_attempts} attempts.")
+                        break  # Exit the while loop to raise 404
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue  # Go to next iteration of the while loop
 
-            # Job found, return the result
-            return result
+                # Job found, return the result
+                return result
 
         except HTTPException:
             # Re-raise HTTP exceptions as-is
@@ -121,43 +128,22 @@ async def job_progress_endpoint(
                 f"HTTPException occurred during attempt {attempts} for job {job_id}, re-raising.",
             )
             raise
-        except Exception as e:
-            # Log errors during attempts but don't necessarily stop retrying unless it's the last attempt
+        except Exception as e:  # Includes duckdb.Error if connect fails in conn_manager
             logger.error(
                 f"Error checking job progress (attempt {attempts}) for job {job_id}: {e!s}",
             )
             if attempts < max_attempts:
                 logger.info(f"Non-fatal error on attempt {attempts}, will retry after delay.")
-                # Clean up potentially broken connection before retrying
-                if conn:
-                    try:
-                        conn.close()
-                        conn = None
-                    except Exception as close_err:
-                        logger.warning(
-                            f"Error closing connection during error handling: {close_err}",
-                        )
-                await asyncio.sleep(retry_delay)  # Wait before retry on error too
+                # Connection (if opened by conn_manager) is closed on context exit
+                await asyncio.sleep(retry_delay)
                 retry_delay *= 2
-                continue  # Continue to next attempt
+                continue
             logger.error(f"Error on final attempt ({attempts}) for job {job_id}. Raising 500.")
-            # Clean up connection if open
-            if conn:
-                try:
-                    conn.close()
-                except Exception as close_err:
-                    logger.warning(
-                        f"Error closing connection during final error handling: {close_err}",
-                    )
             raise HTTPException(
                 status_code=500,
                 detail=f"Database error after retries: {e!s}",
             )
-
-        finally:
-            # Make sure to close the connection if it's still open *at the end of this attempt*
-            if conn:
-                conn.close()
+        # The 'finally' block for closing 'conn' is removed as conn_manager handles it.
 
     # If the loop finished without finding the job (i.e., break was hit after max attempts)
     # raise the 404 error.

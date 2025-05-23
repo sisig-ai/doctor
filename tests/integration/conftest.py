@@ -15,18 +15,18 @@ def in_memory_duckdb_connection():
     - HNSW index created
     - pages table created (for document service tests)
     """
-    from src.lib.database import Database
+    from src.lib.database import DatabaseOperations
 
     conn = duckdb.connect(":memory:")
 
     # Use the same setup functions as the main application
     try:
         # Create a Database instance and initialize with our in-memory connection
-        db = Database()
-        db.conn = conn
+        db = DatabaseOperations()
+        db.db.conn = conn
 
         # Initialize all tables and extensions
-        db.initialize()
+        db.db.initialize()
 
         yield conn
     finally:

@@ -17,11 +17,8 @@ def serialize_tags(tags: list[str] | None) -> str:
 
     Args:
         tags: A list of tag strings, or None.
-
     Returns:
-        A JSON string representation of the tags list.
-        Returns an empty list '[]' if tags is None.
-
+        str: A JSON string representation of the tags list. Returns an empty list '[]' if tags is None.
     """
     if tags is None:
         return json.dumps([])
@@ -33,11 +30,8 @@ def deserialize_tags(tags_json: str | None) -> list[str]:
 
     Args:
         tags_json: The JSON string containing the tags, or None.
-
     Returns:
-        A list of tag strings. Returns an empty list if input is None, empty,
-        or invalid JSON.
-
+        list[str]: A list of tag strings. Returns an empty list if input is None, empty, or invalid JSON.
     """
     if not tags_json:
         return []

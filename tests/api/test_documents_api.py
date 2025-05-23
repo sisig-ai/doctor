@@ -54,12 +54,14 @@ def test_search_docs_endpoint(test_client, mock_duckdb_connection):
     )
 
     # Mock the search_docs service function and DuckDB connection
+    mock_db_class = MagicMock()
+    mock_db_instance = MagicMock()
+    mock_db_instance.conn = mock_duckdb_connection
+    mock_db_class.return_value = mock_db_instance
+
     with (
         patch("src.web_service.api.documents.search_docs", return_value=mock_results),
-        patch(
-            "src.web_service.api.documents.Database.connect_with_retry",
-            return_value=mock_duckdb_connection,
-        ),
+        patch("src.web_service.api.documents.DatabaseOperations", return_value=mock_db_class),
     ):
         # Call the API endpoint
         response = test_client.get(
@@ -85,12 +87,14 @@ def test_search_docs_endpoint(test_client, mock_duckdb_connection):
 def test_search_docs_endpoint_error(test_client, mock_duckdb_connection):
     """Test error handling in the search_docs endpoint."""
     # Mock an exception in the search_docs service function
+    mock_db_class = MagicMock()
+    mock_db_instance = MagicMock()
+    mock_db_instance.conn = mock_duckdb_connection
+    mock_db_class.return_value = mock_db_instance
+
     with (
         patch("src.web_service.api.documents.search_docs", side_effect=Exception("Database error")),
-        patch(
-            "src.web_service.api.documents.Database.connect_with_retry",
-            return_value=mock_duckdb_connection,
-        ),
+        patch("src.web_service.api.documents.DatabaseOperations", return_value=mock_db_class),
     ):
         # Call the API endpoint
         response = test_client.get(
@@ -132,12 +136,14 @@ def test_list_doc_pages_endpoint(test_client, mock_duckdb_connection):
     )
 
     # Mock the list_doc_pages service function and DuckDB connection
+    mock_db_class = MagicMock()
+    mock_db_instance = MagicMock()
+    mock_db_instance.conn = mock_duckdb_connection
+    mock_db_class.return_value = mock_db_instance
+
     with (
         patch("src.web_service.api.documents.list_doc_pages", return_value=mock_response),
-        patch(
-            "src.web_service.api.documents.Database.connect_with_retry",
-            return_value=mock_duckdb_connection,
-        ),
+        patch("src.web_service.api.documents.DatabaseOperations", return_value=mock_db_class),
     ):
         # Call the API endpoint
         response = test_client.get("/list_doc_pages", params={"page": 1})
@@ -163,12 +169,14 @@ def test_get_doc_page_endpoint(test_client, mock_duckdb_connection):
     )
 
     # Mock the get_doc_page service function and DuckDB connection
+    mock_db_class = MagicMock()
+    mock_db_instance = MagicMock()
+    mock_db_instance.conn = mock_duckdb_connection
+    mock_db_class.return_value = mock_db_instance
+
     with (
         patch("src.web_service.api.documents.get_doc_page", return_value=mock_response),
-        patch(
-            "src.web_service.api.documents.Database.connect_with_retry",
-            return_value=mock_duckdb_connection,
-        ),
+        patch("src.web_service.api.documents.DatabaseOperations", return_value=mock_db_class),
     ):
         # Call the API endpoint
         response = test_client.get(
@@ -189,12 +197,14 @@ def test_get_doc_page_endpoint(test_client, mock_duckdb_connection):
 def test_get_doc_page_endpoint_not_found(test_client, mock_duckdb_connection):
     """Test the get_doc_page endpoint when page is not found."""
     # Mock the get_doc_page service function to return None (page not found)
+    mock_db_class = MagicMock()
+    mock_db_instance = MagicMock()
+    mock_db_instance.conn = mock_duckdb_connection
+    mock_db_class.return_value = mock_db_instance
+
     with (
         patch("src.web_service.api.documents.get_doc_page", return_value=None),
-        patch(
-            "src.web_service.api.documents.Database.connect_with_retry",
-            return_value=mock_duckdb_connection,
-        ),
+        patch("src.web_service.api.documents.DatabaseOperations", return_value=mock_db_class),
     ):
         # Call the API endpoint
         response = test_client.get(
@@ -214,12 +224,14 @@ def test_list_tags_endpoint(test_client, mock_duckdb_connection):
     mock_response = ListTagsResponse(tags=["tag1", "tag2", "tag3"])
 
     # Mock the list_tags service function and DuckDB connection
+    mock_db_class = MagicMock()
+    mock_db_instance = MagicMock()
+    mock_db_instance.conn = mock_duckdb_connection
+    mock_db_class.return_value = mock_db_instance
+
     with (
         patch("src.web_service.api.documents.list_tags", return_value=mock_response),
-        patch(
-            "src.web_service.api.documents.Database.connect_with_retry",
-            return_value=mock_duckdb_connection,
-        ),
+        patch("src.web_service.api.documents.DatabaseOperations", return_value=mock_db_class),
     ):
         # Call the API endpoint
         response = test_client.get("/list_tags")
@@ -278,15 +290,17 @@ def test_document_api_integration(test_client, mock_duckdb_connection):
     tags = ListTagsResponse(tags=["tag1", "tag2"])
 
     # Patch all service functions to return mock data
+    mock_db_class = MagicMock()
+    mock_db_instance = MagicMock()
+    mock_db_instance.conn = mock_duckdb_connection
+    mock_db_class.return_value = mock_db_instance
+
     with (
         patch("src.web_service.api.documents.search_docs", return_value=search_results),
         patch("src.web_service.api.documents.list_doc_pages", return_value=doc_pages),
         patch("src.web_service.api.documents.get_doc_page", return_value=doc_page),
         patch("src.web_service.api.documents.list_tags", return_value=tags),
-        patch(
-            "src.web_service.api.documents.Database.connect_with_retry",
-            return_value=mock_duckdb_connection,
-        ),
+        patch("src.web_service.api.documents.DatabaseOperations", return_value=mock_db_class),
     ):
         # Test search_docs endpoint
         response = test_client.get("/search_docs", params={"query": "test"})

@@ -1,0 +1,9 @@
+---
+description: Writing tests or implementing new logic
+globs:
+alwaysApply: false
+---
+- Always write tests using functional pytest
+- Tests should always maintain or increase code coverage
+- Use parametrized testing whenever possible, instead of multiple test functions
+- Use snapshot tests to check for known/constant values

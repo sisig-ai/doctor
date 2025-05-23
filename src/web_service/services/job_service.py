@@ -150,18 +150,24 @@ async def get_job_count() -> int:
         int: Total number of jobs
 
     """
-    from src.lib.database import Database
+    from src.lib.database import DatabaseOperations
 
-    db = None
+    db_ops = DatabaseOperations()
     try:
-        db = Database(read_only=True)
-        conn = db.connect()
-        job_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-        logger.info(f"Database contains {job_count} total jobs.")
-        return job_count
+        # Use DuckDBConnectionManager as a context manager
+        with db_ops.db as conn_manager:
+            actual_conn = conn_manager.conn
+            if not actual_conn:
+                logger.error("Failed to obtain database connection for get_job_count.")
+                return -1  # Or raise an error
+            job_count_result = actual_conn.execute("SELECT COUNT(*) FROM jobs").fetchone()
+            if job_count_result:
+                job_count = job_count_result[0]
+                logger.info(f"Database contains {job_count} total jobs.")
+                return job_count
+            logger.warning("Could not retrieve job count from database.")
+            return -1
     except Exception as count_error:
         logger.warning(f"Failed to count jobs in database: {count_error!s}")
         return -1
-    finally:
-        if db:
-            db.close()
+    # No finally block needed to close connection, context manager handles it.
