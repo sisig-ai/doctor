@@ -20,12 +20,13 @@ A tool for discovering, crawl, and indexing web sites to be exposed as an MCP se
 ### 🔍 Overview
 
 Doctor provides a complete stack for:
-- Crawling web pages using crawl4ai
+- Crawling web pages using crawl4ai with hierarchy tracking
 - Chunking text with LangChain
 - Creating embeddings with OpenAI via litellm
 - Storing data in DuckDB with vector search support
 - Exposing search functionality via a FastAPI web service
 - Making these capabilities available to LLMs through an MCP server
+- Navigating crawled sites with hierarchical site maps
 
 ---
 
@@ -80,11 +81,37 @@ Doctor provides a complete stack for:
 ---
 
 ### ☁️ Web API
+
+#### Core Endpoints
 - `POST /fetch_url`: Start crawling a URL
 - `GET /search_docs`: Search indexed documents
 - `GET /job_progress`: Check crawl job progress
 - `GET /list_doc_pages`: List indexed pages
 - `GET /get_doc_page`: Get full text of a page
+
+#### Site Map Feature
+The Maps feature provides a hierarchical view of crawled websites, making it easy to navigate and explore the structure of indexed sites.
+
+**Endpoints:**
+- `GET /map`: View an index of all crawled sites
+- `GET /map/site/{root_page_id}`: View the hierarchical tree structure of a specific site
+- `GET /map/page/{page_id}`: View a specific page with navigation (parent, siblings, children)
+- `GET /map/page/{page_id}/raw`: Get the raw markdown content of a page
+
+**Features:**
+- **Hierarchical Navigation**: Pages maintain parent-child relationships, allowing you to navigate through the site structure
+- **Domain Grouping**: Pages from the same domain crawled individually are automatically grouped together
+- **Automatic Title Extraction**: Page titles are extracted from HTML or markdown content
+- **Breadcrumb Navigation**: Easy navigation with breadcrumbs showing the path from root to current page
+- **Sibling Navigation**: Quick access to pages at the same level in the hierarchy
+- **Legacy Page Support**: Pages crawled before hierarchy tracking are grouped by domain for easy access
+- **No JavaScript Required**: All navigation works with pure HTML and CSS for maximum compatibility
+
+**Usage Example:**
+1. Crawl a website using the `/fetch_url` endpoint
+2. Visit `/map` to see all crawled sites
+3. Click on a site to view its hierarchical structure
+4. Navigate through pages using the provided links
 
 ---
 
@@ -132,12 +159,18 @@ pytest --cov=src --cov-report=term-missing
 - `tests/conftest.py`: Common fixtures for all tests
 - `tests/lib/`: Tests for library components
   - `test_crawler.py`: Tests for the crawler module
+  - `test_crawler_enhanced.py`: Tests for enhanced crawler with hierarchy tracking
   - `test_chunker.py`: Tests for the chunker module
   - `test_embedder.py`: Tests for the embedder module
   - `test_database.py`: Tests for the unified Database class
+  - `test_database_hierarchy.py`: Tests for database hierarchy operations
 - `tests/common/`: Tests for common modules
 - `tests/services/`: Tests for service layer
+  - `test_map_service.py`: Tests for the map service
 - `tests/api/`: Tests for API endpoints
+  - `test_map_api.py`: Tests for map API endpoints
+- `tests/integration/`: Integration tests
+  - `test_processor_enhanced.py`: Tests for enhanced processor with hierarchy
 
 ---
 

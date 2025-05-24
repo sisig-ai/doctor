@@ -9,8 +9,7 @@ from rq import Queue
 
 from src.common.config import REDIS_URI
 from src.common.logger import get_logger
-from src.common.processor import process_page_batch
-from src.lib.crawler import crawl_url
+from src.common.processor_enhanced import process_crawl_with_hierarchy
 from src.lib.database import DatabaseOperations
 from src.lib.database.schema import CREATE_FTS_INDEX_SQL
 from src.lib.database.utils import serialize_tags
@@ -194,38 +193,27 @@ async def _execute_pipeline(
         pages_crawled=0,
     )
 
-    # Step 1: Crawl the URL
-    logger.info(f"Job {job_id}: Beginning crawling phase from URL: {url}")
-    crawl_results = await crawl_url(url, max_pages=max_pages)
-    pages_discovered = len(crawl_results)
-
-    logger.info(f"Job {job_id}: Crawl discovered {pages_discovered} pages")
-
-    # Update job progress after crawl phase
-    db_ops_crawl_progress = DatabaseOperations()
-    await db_ops_crawl_progress.update_job_status(
-        job_id=job_id,
-        status="running",
-        pages_discovered=pages_discovered,
-        pages_crawled=0,
+    # Use enhanced crawling with hierarchy tracking
+    logger.info(
+        f"Job {job_id}: Beginning enhanced crawling with hierarchy tracking from URL: {url}"
     )
 
-    # Step 2: Process the crawled pages
-    if crawl_results:
-        logger.info(f"Job {job_id}: Beginning processing phase for {pages_discovered} pages")
+    # Process everything with hierarchy tracking
+    processed_page_ids = await process_crawl_with_hierarchy(
+        url=url,
+        job_id=job_id,
+        tags=tags,
+        max_pages=max_pages,
+    )
 
-        # Process the pages in batches
-        processed_page_ids = await process_page_batch(
-            page_results=crawl_results,
-            job_id=job_id,
-            tags=tags,
-        )
+    pages_crawled = len(processed_page_ids)
+    pages_discovered = pages_crawled  # With the new approach, discovered == crawled
 
-        pages_crawled = len(processed_page_ids)
-        logger.info(
-            f"Job {job_id}: Successfully processed {pages_crawled}/{pages_discovered} pages",
-        )
+    logger.info(
+        f"Job {job_id}: Successfully processed {pages_crawled} pages with hierarchy tracking",
+    )
 
+    if processed_page_ids:
         # Final update before completing
         db_ops_process_complete = DatabaseOperations()
         await db_ops_process_complete.update_job_status(
