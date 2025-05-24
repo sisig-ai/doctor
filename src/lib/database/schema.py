@@ -28,7 +28,12 @@ CREATE TABLE IF NOT EXISTS pages (
     raw_text TEXT,
     crawl_date TIMESTAMP,
     tags VARCHAR,  -- JSON string array
-    job_id VARCHAR  -- Reference to the job that crawled this page
+    job_id VARCHAR,  -- Reference to the job that crawled this page
+    parent_page_id VARCHAR,  -- Reference to parent page for hierarchy
+    root_page_id VARCHAR,  -- Reference to root page of the site
+    depth INTEGER DEFAULT 0,  -- Distance from root page
+    path TEXT,  -- Relative path from root page
+    title TEXT  -- Extracted page title
 )
 """
 
@@ -93,8 +98,9 @@ TEST_CONNECTION_SQL = "SELECT 1"
 # DML (Data Manipulation Language) SQL
 # Used for inserting and updating data in tables.
 INSERT_PAGE_SQL = """
-INSERT INTO pages (id, url, domain, raw_text, crawl_date, tags, job_id)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pages (id, url, domain, raw_text, crawl_date, tags, job_id,
+                   parent_page_id, root_page_id, depth, path, title)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 # Base for dynamic UPDATE job query

@@ -64,6 +64,11 @@ class DatabaseOperations:
         job_id: str,
         tags: list[str] | None = None,
         page_id: str | None = None,
+        parent_page_id: str | None = None,
+        root_page_id: str | None = None,
+        depth: int = 0,
+        path: str | None = None,
+        title: str | None = None,
     ) -> str:
         """Store a crawled page in the database.
 
@@ -73,6 +78,11 @@ class DatabaseOperations:
             job_id: The ID of the crawl job this page belongs to.
             tags: Optional list of tags to associate with the page.
             page_id: Optional ID for the page. If None, a UUID will be generated.
+            parent_page_id: Optional ID of the parent page in the hierarchy.
+            root_page_id: Optional ID of the root page of the site.
+            depth: Distance from the root page (default 0).
+            path: Relative path from the root page.
+            title: Extracted page title.
 
         Returns:
             str: The ID of the stored page (either provided or generated).
@@ -84,6 +94,10 @@ class DatabaseOperations:
         page_id = page_id or str(uuid.uuid4())
         domain = urlparse(url).netloc
         tags = tags or []
+
+        # If this is a root page (no parent), set root_page_id to self
+        if parent_page_id is None and root_page_id is None:
+            root_page_id = page_id
 
         logger.debug(f"Storing page {page_id} from {url}")
 
@@ -108,6 +122,11 @@ class DatabaseOperations:
                             datetime.datetime.now(datetime.UTC),
                             serialize_tags(tags),
                             job_id,
+                            parent_page_id,
+                            root_page_id,
+                            depth,
+                            path,
+                            title,
                         ),
                     )
                     await asyncio.to_thread(conn_manager.commit)
@@ -257,3 +276,183 @@ class DatabaseOperations:
         logger.info("Forcing database checkpoint")
         async with self._write_lock:
             await self._checkpoint_internal_async()
+
+    async def get_page_by_url(self, url: str) -> dict[str, Any] | None:
+        """Get a page by its URL.
+
+        Args:
+            url: The URL of the page to retrieve.
+
+        Returns:
+            dict[str, Any] | None: The page data if found, None otherwise.
+        """
+        with self.db as conn_manager:
+            conn = conn_manager.conn
+            if not conn:
+                raise RuntimeError("Failed to obtain database connection")
+
+            try:
+                result = await asyncio.to_thread(
+                    conn.execute, "SELECT * FROM pages WHERE url = ?", [url]
+                )
+                row = result.fetchone()
+                if row:
+                    columns = [desc[0] for desc in result.description]
+                    return dict(zip(columns, row))
+                return None
+            except Exception as e:
+                logger.error(f"Error getting page by URL {url}: {e}")
+                raise
+
+    async def get_root_pages(self) -> list[dict[str, Any]]:
+        """Get all root pages (pages with no parent).
+
+        Args:
+            None.
+
+        Returns:
+            list[dict[str, Any]]: List of root page records.
+        """
+        with self.db as conn_manager:
+            conn = conn_manager.conn
+            if not conn:
+                raise RuntimeError("Failed to obtain database connection")
+
+            try:
+                result = await asyncio.to_thread(
+                    conn.execute,
+                    """SELECT * FROM pages
+                       WHERE parent_page_id IS NULL
+                       ORDER BY crawl_date DESC""",
+                )
+                rows = result.fetchall()
+                columns = [desc[0] for desc in result.description]
+                return [dict(zip(columns, row)) for row in rows]
+            except Exception as e:
+                logger.error(f"Error getting root pages: {e}")
+                raise
+
+    async def get_page_hierarchy(self, root_page_id: str) -> list[dict[str, Any]]:
+        """Get all pages in a hierarchy starting from a root page.
+
+        Args:
+            root_page_id: The ID of the root page.
+
+        Returns:
+            list[dict[str, Any]]: List of all pages in the hierarchy.
+        """
+        with self.db as conn_manager:
+            conn = conn_manager.conn
+            if not conn:
+                raise RuntimeError("Failed to obtain database connection")
+
+            try:
+                result = await asyncio.to_thread(
+                    conn.execute,
+                    """SELECT * FROM pages
+                       WHERE root_page_id = ?
+                       ORDER BY depth, path""",
+                    [root_page_id],
+                )
+                rows = result.fetchall()
+                columns = [desc[0] for desc in result.description]
+                return [dict(zip(columns, row)) for row in rows]
+            except Exception as e:
+                logger.error(f"Error getting page hierarchy for {root_page_id}: {e}")
+                raise
+
+    async def get_child_pages(self, parent_page_id: str) -> list[dict[str, Any]]:
+        """Get direct child pages of a parent page.
+
+        Args:
+            parent_page_id: The ID of the parent page.
+
+        Returns:
+            list[dict[str, Any]]: List of child page records.
+        """
+        with self.db as conn_manager:
+            conn = conn_manager.conn
+            if not conn:
+                raise RuntimeError("Failed to obtain database connection")
+
+            try:
+                result = await asyncio.to_thread(
+                    conn.execute,
+                    """SELECT * FROM pages
+                       WHERE parent_page_id = ?
+                       ORDER BY title""",
+                    [parent_page_id],
+                )
+                rows = result.fetchall()
+                columns = [desc[0] for desc in result.description]
+                return [dict(zip(columns, row)) for row in rows]
+            except Exception as e:
+                logger.error(f"Error getting child pages for {parent_page_id}: {e}")
+                raise
+
+    async def get_sibling_pages(self, page_id: str) -> list[dict[str, Any]]:
+        """Get sibling pages (pages with the same parent).
+
+        Args:
+            page_id: The ID of the page whose siblings to find.
+
+        Returns:
+            list[dict[str, Any]]: List of sibling page records.
+        """
+        with self.db as conn_manager:
+            conn = conn_manager.conn
+            if not conn:
+                raise RuntimeError("Failed to obtain database connection")
+
+            try:
+                # First get the parent_page_id of the given page
+                result = await asyncio.to_thread(
+                    conn.execute, "SELECT parent_page_id FROM pages WHERE id = ?", [page_id]
+                )
+                row = result.fetchone()
+                if not row or row[0] is None:
+                    return []  # No parent means no siblings
+
+                parent_page_id = row[0]
+
+                # Get all pages with the same parent
+                result = await asyncio.to_thread(
+                    conn.execute,
+                    """SELECT * FROM pages
+                       WHERE parent_page_id = ? AND id != ?
+                       ORDER BY title""",
+                    [parent_page_id, page_id],
+                )
+                rows = result.fetchall()
+                columns = [desc[0] for desc in result.description]
+                return [dict(zip(columns, row)) for row in rows]
+            except Exception as e:
+                logger.error(f"Error getting sibling pages for {page_id}: {e}")
+                raise
+
+    async def get_page_by_id(self, page_id: str) -> dict[str, Any] | None:
+        """Get a page by its ID.
+
+        Args:
+            page_id: The ID of the page to retrieve.
+
+        Returns:
+            dict[str, Any] | None: The page data if found, None otherwise.
+        """
+        with self.db as conn_manager:
+            conn = conn_manager.conn
+            if not conn:
+                raise RuntimeError("Failed to obtain database connection")
+
+            try:
+                result = await asyncio.to_thread(
+                    conn.execute, "SELECT * FROM pages WHERE id = ?", [page_id]
+                )
+                row = result.fetchone()
+                if row:
+                    columns = [desc[0] for desc in result.description]
+                    return dict(zip(columns, row))
+                return None
+            except Exception as e:
+                logger.error(f"Error getting page by ID {page_id}: {e}")
+                raise

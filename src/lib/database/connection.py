@@ -396,6 +396,12 @@ class DuckDBConnectionManager:
         self.ensure_tables()
         self.ensure_vss_extension()
 
+        # Run any pending migrations
+        from .migrations import MigrationRunner
+
+        runner = MigrationRunner(conn)
+        runner.run_migrations()
+
         logger.debug("DuckDBConnectionManager initialization complete.")
 
     def __enter__(self) -> "DuckDBConnectionManager":

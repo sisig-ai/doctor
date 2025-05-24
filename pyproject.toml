@@ -21,6 +21,7 @@ dependencies = [
     "fastapi-mcp==0.3.2",
     "mcp==1.7.1",
     "nest-asyncio>=1.6.0",
+    "markdown>=3.8",
 ]
 
 [build-system]
