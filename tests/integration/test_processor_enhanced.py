@@ -211,8 +211,8 @@ class TestProcessorEnhancedIntegration:
                         url="https://example.com", job_id="test-job"
                     )
 
-        # Should return empty list due to error
-        assert page_ids == []
+                    # Should return empty list due to error
+                    assert page_ids == []
 
-        # Job status should still be updated
-        mock_db.update_job_status.assert_called()
+                    # Job status won't be updated if all pages fail
+                    mock_db.update_job_status.assert_not_called()

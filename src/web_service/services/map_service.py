@@ -225,10 +225,15 @@ class MapService:
             "children": [],
         }
 
-        # Add all pages as direct children (flat structure)
-        # First add root pages, then legacy pages
-        all_pages = root_pages + legacy_pages
-        for page in all_pages:
+        # Add pages as direct children (flat structure)
+        # For legacy domain groups, only include legacy pages
+        if domain_group_id.startswith("legacy-domain-"):
+            pages_to_add = legacy_pages
+        else:
+            # For regular domain groups, add all pages
+            pages_to_add = root_pages + legacy_pages
+
+        for page in pages_to_add:
             page["children"] = []  # Ensure each page has a children list
             root["children"].append(page)
 

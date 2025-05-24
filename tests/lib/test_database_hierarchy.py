@@ -1,7 +1,7 @@
 """Tests for database operations with hierarchy support."""
 
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, patch
 import datetime
 
 from src.lib.database.operations import DatabaseOperations
@@ -157,7 +157,7 @@ class TestDatabaseHierarchyOperations:
         ]
 
         mock_conn = Mock()
-        mock_conn.execute = AsyncMock(return_value=mock_result)
+        mock_conn.execute = Mock(return_value=mock_result)
 
         mock_conn_manager = Mock()
         mock_conn_manager.conn = mock_conn
@@ -166,7 +166,8 @@ class TestDatabaseHierarchyOperations:
             mock_db.__enter__.return_value = mock_conn_manager
             mock_db.__exit__.return_value = None
 
-            root_pages = await db_ops.get_root_pages()
+            with patch("asyncio.to_thread", return_value=mock_result):
+                root_pages = await db_ops.get_root_pages()
 
         assert len(root_pages) == 2
         assert root_pages[0]["title"] == "Site 1"
@@ -249,7 +250,7 @@ class TestDatabaseHierarchyOperations:
         ]
 
         mock_conn = Mock()
-        mock_conn.execute = AsyncMock(return_value=mock_result)
+        mock_conn.execute = Mock(return_value=mock_result)
 
         mock_conn_manager = Mock()
         mock_conn_manager.conn = mock_conn
@@ -258,7 +259,8 @@ class TestDatabaseHierarchyOperations:
             mock_db.__enter__.return_value = mock_conn_manager
             mock_db.__exit__.return_value = None
 
-            hierarchy = await db_ops.get_page_hierarchy(root_id)
+            with patch("asyncio.to_thread", return_value=mock_result):
+                hierarchy = await db_ops.get_page_hierarchy(root_id)
 
         assert len(hierarchy) == 3
         assert hierarchy[0]["depth"] == 0
@@ -326,7 +328,7 @@ class TestDatabaseHierarchyOperations:
         ]
 
         mock_conn = Mock()
-        mock_conn.execute = AsyncMock(return_value=mock_result)
+        mock_conn.execute = Mock(return_value=mock_result)
 
         mock_conn_manager = Mock()
         mock_conn_manager.conn = mock_conn
@@ -335,7 +337,8 @@ class TestDatabaseHierarchyOperations:
             mock_db.__enter__.return_value = mock_conn_manager
             mock_db.__exit__.return_value = None
 
-            children = await db_ops.get_child_pages(parent_id)
+            with patch("asyncio.to_thread", return_value=mock_result):
+                children = await db_ops.get_child_pages(parent_id)
 
         assert len(children) == 2
         assert all(child["parent_page_id"] == parent_id for child in children)
@@ -407,7 +410,7 @@ class TestDatabaseHierarchyOperations:
         ]
 
         mock_conn = Mock()
-        mock_conn.execute = AsyncMock(side_effect=[mock_parent_result, mock_siblings_result])
+        mock_conn.execute = Mock(side_effect=[mock_parent_result, mock_siblings_result])
 
         mock_conn_manager = Mock()
         mock_conn_manager.conn = mock_conn
@@ -416,7 +419,8 @@ class TestDatabaseHierarchyOperations:
             mock_db.__enter__.return_value = mock_conn_manager
             mock_db.__exit__.return_value = None
 
-            siblings = await db_ops.get_sibling_pages(page_id)
+            with patch("asyncio.to_thread", side_effect=[mock_parent_result, mock_siblings_result]):
+                siblings = await db_ops.get_sibling_pages(page_id)
 
         assert len(siblings) == 2
         assert page_id not in [s["id"] for s in siblings]
@@ -437,7 +441,7 @@ class TestDatabaseHierarchyOperations:
         mock_result.fetchone.return_value = (None,)
 
         mock_conn = Mock()
-        mock_conn.execute = AsyncMock(return_value=mock_result)
+        mock_conn.execute = Mock(return_value=mock_result)
 
         mock_conn_manager = Mock()
         mock_conn_manager.conn = mock_conn
@@ -446,6 +450,7 @@ class TestDatabaseHierarchyOperations:
             mock_db.__enter__.return_value = mock_conn_manager
             mock_db.__exit__.return_value = None
 
-            siblings = await db_ops.get_sibling_pages("orphan-page")
+            with patch("asyncio.to_thread", return_value=mock_result):
+                siblings = await db_ops.get_sibling_pages("orphan-page")
 
         assert siblings == []

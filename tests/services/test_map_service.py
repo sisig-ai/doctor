@@ -22,10 +22,20 @@ class TestMapService:
         """
         service = MapService()
 
-        # Mock the database response
+        # Mock the database response - sites from different domains
         mock_sites = [
-            {"id": "site1", "url": "https://example1.com", "title": "Site 1"},
-            {"id": "site2", "url": "https://example2.com", "title": "Site 2"},
+            {
+                "id": "site1",
+                "url": "https://example1.com",
+                "title": "Site 1",
+                "domain": "example1.com",
+            },
+            {
+                "id": "site2",
+                "url": "https://example2.com",
+                "title": "Site 2",
+                "domain": "example2.com",
+            },
         ]
 
         with patch.object(service.db_ops, "get_root_pages", new_callable=AsyncMock) as mock_get:
@@ -33,7 +43,10 @@ class TestMapService:
 
             sites = await service.get_all_sites()
 
-        assert sites == mock_sites
+        # Since they're from different domains, they should not be grouped
+        assert len(sites) == 2
+        assert sites[0]["id"] == "site1"
+        assert sites[1]["id"] == "site2"
         mock_get.assert_called_once()
 
     async def test_build_page_tree(self) -> None:
@@ -294,7 +307,9 @@ class TestMapService:
 
         html = service._build_tree_html(node, is_root=False)
 
-        assert '<li><a href="/map/page/leaf-123">Leaf Page</a></li>' in html
+        assert '<a href="/map/page/leaf-123">Leaf Page</a>' in html
+        assert '<span class="tree-line">' in html
+        assert '<span class="tree-node">' in html
         assert "<details>" not in html  # No collapsible section for leaf
 
     def test_build_tree_html_with_children(self) -> None:

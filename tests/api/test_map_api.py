@@ -173,7 +173,7 @@ class TestMapAPI:
             response = client.get(f"/map/page/{page_id}/raw")
 
         assert response.status_code == 200
-        assert response.headers["content-type"] == "text/markdown"
+        assert response.headers["content-type"] == "text/markdown; charset=utf-8"
         assert response.text == raw_content
         assert 'filename="Test Page.md"' in response.headers["content-disposition"]
 

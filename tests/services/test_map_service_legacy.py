@@ -90,13 +90,13 @@ class TestMapServiceLegacy:
 
         # Check blog domain group
         blog_group = next(s for s in domain_groups if "blog.example.com" in s["title"])
-        assert blog_group["id"] == "domain-blog.example.com"
+        assert blog_group["id"] == "legacy-domain-blog.example.com"
         assert blog_group["page_count"] == 2
         assert blog_group["is_synthetic"] is True
 
         # Check shop domain group
         shop_group = next(s for s in domain_groups if "shop.example.com" in s["title"])
-        assert shop_group["id"] == "domain-shop.example.com"
+        assert shop_group["id"] == "legacy-domain-shop.example.com"
         assert shop_group["page_count"] == 1
 
     async def test_build_domain_tree(self) -> None:
@@ -130,6 +130,8 @@ class TestMapServiceLegacy:
                 "url": "https://blog.example.com/post3",
                 "title": "Post 3",
                 "root_page_id": "page3",  # This is a proper root, not legacy
+                "parent_page_id": None,
+                "depth": 0,
             },
         ]
 
@@ -138,12 +140,12 @@ class TestMapServiceLegacy:
         ) as mock_get:
             mock_get.return_value = mock_domain_pages
 
-            tree = await service.build_page_tree(f"domain-{domain}")
+            tree = await service.build_page_tree(f"legacy-domain-{domain}")
 
         # Check the synthetic root
-        assert tree["id"] == f"domain-{domain}"
+        assert tree["id"] == f"legacy-domain-{domain}"
         assert tree["is_synthetic"] is True
-        assert tree["title"] == f"{domain} (Legacy Pages)"
+        assert tree["title"] == f"{domain} (3 Pages)"
 
         # Should only include legacy pages (not page3)
         assert len(tree["children"]) == 2
@@ -172,7 +174,7 @@ class TestMapServiceLegacy:
                 "is_synthetic": False,
             },
             {
-                "id": "domain-blog.example.com",
+                "id": "legacy-domain-blog.example.com",
                 "url": "https://blog.example.com",
                 "title": "blog.example.com (Legacy Pages)",
                 "crawl_date": datetime.datetime(2024, 1, 1),
@@ -189,5 +191,5 @@ class TestMapServiceLegacy:
 
         # Check legacy domain group formatting
         assert "blog.example.com (Legacy Pages)" in html
-        assert "Domain Group • 5 legacy pages" in html
+        assert "Domain Group • 5 pages" in html
         assert "First crawled: 2024-01-01" in html

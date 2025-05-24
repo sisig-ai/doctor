@@ -123,7 +123,9 @@ async def crawl_url_with_hierarchy(
         if enhanced.parent_url and enhanced.parent_url in url_to_result:
             parent = url_to_result[enhanced.parent_url]
             # Calculate relative path based on parent's path
-            if parent.relative_path:
+            if parent.relative_path == "/":
+                enhanced.relative_path = enhanced.title
+            elif parent.relative_path:
                 enhanced.relative_path = f"{parent.relative_path}/{enhanced.title}"
             else:
                 enhanced.relative_path = enhanced.title
