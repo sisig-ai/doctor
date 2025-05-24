@@ -26,7 +26,7 @@ class MapService:
         self.db_ops = DatabaseOperations()
 
     async def get_all_sites(self) -> list[dict[str, Any]]:
-        """Get all root pages (sites) in the database.
+        """Get all root pages (sites) in the database, including legacy pages grouped by domain.
 
         Args:
             None.
@@ -34,7 +34,22 @@ class MapService:
         Returns:
             list[dict[str, Any]]: List of root page information.
         """
-        return await self.db_ops.get_root_pages()
+        # Get all pages that are roots (have no parent)
+        root_pages = await self.db_ops.get_root_pages()
+
+        # Group root pages by domain if there are multiple from the same domain
+        domain_grouped_roots = await self._group_root_pages_by_domain(root_pages)
+
+        # Also get legacy pages (pages without hierarchy info) and group by domain
+        legacy_groups = await self._get_legacy_domain_groups()
+
+        # Combine both lists
+        all_sites = domain_grouped_roots + legacy_groups
+
+        # Sort by crawl_date descending
+        all_sites.sort(key=lambda x: x.get("crawl_date", ""), reverse=True)
+
+        return all_sites
 
     async def build_page_tree(self, root_page_id: str) -> dict[str, Any]:
         """Build a hierarchical tree structure for a site.
@@ -45,6 +60,10 @@ class MapService:
         Returns:
             dict[str, Any]: Tree structure with nested children.
         """
+        # Check if this is a domain group
+        if root_page_id.startswith("domain-") or root_page_id.startswith("legacy-domain-"):
+            return await self._build_domain_tree(root_page_id)
+
         # Get all pages in the hierarchy
         pages = await self.db_ops.get_page_hierarchy(root_page_id)
 
@@ -69,6 +88,155 @@ class MapService:
 
         return root or {}
 
+    async def _group_root_pages_by_domain(
+        self, root_pages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Group root pages by domain if there are multiple from the same domain.
+
+        Args:
+            root_pages: List of root pages from get_root_pages.
+
+        Returns:
+            list[dict[str, Any]]: List with individual pages and domain groups.
+        """
+        # Count pages per domain
+        domain_counts = {}
+        domain_pages = {}
+
+        for page in root_pages:
+            domain = page.get("domain", "unknown")
+            if domain not in domain_counts:
+                domain_counts[domain] = 0
+                domain_pages[domain] = []
+            domain_counts[domain] += 1
+            domain_pages[domain].append(page)
+
+        # Build result list
+        result = []
+
+        for domain, count in domain_counts.items():
+            if count > 1:
+                # Multiple pages from this domain - create a group
+                pages = domain_pages[domain]
+                oldest_page = min(pages, key=lambda p: p.get("crawl_date", ""))
+
+                synthetic_root = {
+                    "id": f"domain-{domain}",
+                    "url": f"https://{domain}",
+                    "domain": domain,
+                    "title": f"{domain} (Multiple Pages)",
+                    "crawl_date": oldest_page.get("crawl_date"),
+                    "parent_page_id": None,
+                    "root_page_id": f"domain-{domain}",
+                    "is_synthetic": True,
+                    "page_count": count,
+                }
+                result.append(synthetic_root)
+            else:
+                # Single page from this domain - keep as is
+                result.extend(domain_pages[domain])
+
+        return result
+
+    async def _get_legacy_domain_groups(self) -> list[dict[str, Any]]:
+        """Get legacy pages grouped by domain.
+
+        Args:
+            None.
+
+        Returns:
+            list[dict[str, Any]]: List of synthetic root pages for each domain with legacy pages.
+        """
+        # Get all legacy pages (pages where root_page_id IS NULL and parent_page_id IS NULL)
+        # but exclude pages that are already roots (where root_page_id = id)
+        legacy_pages = await self.db_ops.get_legacy_pages()
+
+        # Group by domain
+        domain_groups = {}
+        for page in legacy_pages:
+            domain = page.get("domain", "unknown")
+            if domain not in domain_groups:
+                domain_groups[domain] = []
+            domain_groups[domain].append(page)
+
+        # Create synthetic root pages for each domain only if there are actually legacy pages
+        synthetic_roots = []
+        for domain, pages in domain_groups.items():
+            if len(pages) > 0:  # Only create group if there are legacy pages
+                # Find the oldest page in this domain to use as representative
+                oldest_page = min(pages, key=lambda p: p.get("crawl_date", ""))
+
+                # Create a synthetic root page
+                synthetic_root = {
+                    "id": f"legacy-domain-{domain}",  # Different ID format for legacy groups
+                    "url": f"https://{domain}",
+                    "domain": domain,
+                    "title": f"{domain} (Legacy Pages)",
+                    "crawl_date": oldest_page.get("crawl_date"),
+                    "parent_page_id": None,
+                    "root_page_id": f"legacy-domain-{domain}",
+                    "is_synthetic": True,  # Flag to indicate this is a synthetic entry
+                    "page_count": len(pages),
+                }
+                synthetic_roots.append(synthetic_root)
+
+        return synthetic_roots
+
+    async def _build_domain_tree(self, domain_group_id: str) -> dict[str, Any]:
+        """Build a tree for a domain group.
+
+        Args:
+            domain_group_id: The synthetic domain group ID (e.g., 'domain-example.com').
+
+        Returns:
+            dict[str, Any]: Tree structure with all pages from that domain.
+        """
+        # Extract domain from the ID
+        domain = domain_group_id.replace("domain-", "").replace("legacy-", "")
+
+        # Get all pages for this domain
+        all_domain_pages = await self.db_ops.get_pages_by_domain(domain)
+
+        # Separate pages into groups
+        root_pages = []
+        legacy_pages = []
+
+        for p in all_domain_pages:
+            # Check if it's a proper root page
+            is_proper_root = (
+                p.get("parent_page_id") is None
+                and p.get("root_page_id") is not None
+                and p.get("root_page_id") == p["id"]
+                and p.get("depth") is not None
+                and p.get("depth") >= 0
+            )
+            if is_proper_root:
+                root_pages.append(p)
+            else:
+                legacy_pages.append(p)
+
+        # Create the root node
+        root = {
+            "id": domain_group_id,
+            "title": f"{domain} ({len(all_domain_pages)} Pages)",
+            "url": f"https://{domain}",
+            "domain": domain,
+            "is_synthetic": True,
+            "children": [],
+        }
+
+        # Add all pages as direct children (flat structure)
+        # First add root pages, then legacy pages
+        all_pages = root_pages + legacy_pages
+        for page in all_pages:
+            page["children"] = []  # Ensure each page has a children list
+            root["children"].append(page)
+
+        # Sort children by URL for better organization
+        root["children"].sort(key=lambda p: p.get("url", ""))
+
+        return root
+
     async def get_navigation_context(self, page_id: str) -> dict[str, Any]:
         """Get navigation context for a page (parent, siblings).
 
@@ -88,11 +256,39 @@ class MapService:
             "siblings": [],
             "children": [],
             "root": None,
+            "domain_group": None,
         }
 
         # Get parent page
         if page["parent_page_id"]:
             context["parent"] = await self.db_ops.get_page_by_id(page["parent_page_id"])
+
+        # If no parent page, check if this page belongs to a domain group
+        if not context["parent"] and page.get("domain"):
+            # Check if there are multiple pages from this domain
+            domain_pages = await self.db_ops.get_pages_by_domain(page["domain"])
+
+            # Count root pages from this domain
+            root_count = sum(
+                1
+                for p in domain_pages
+                if (
+                    p.get("parent_page_id") is None
+                    and p.get("root_page_id") is not None
+                    and p.get("root_page_id") == p["id"]
+                    and p.get("depth") is not None
+                    and p.get("depth") >= 0
+                )
+            )
+
+            if root_count > 1:
+                # This page belongs to a domain group
+                context["domain_group"] = {
+                    "id": f"domain-{page['domain']}",
+                    "title": f"{page['domain']} (Multiple Pages)",
+                    "url": f"https://{page['domain']}",
+                    "is_synthetic": True,
+                }
 
         # Get siblings
         context["siblings"] = await self.db_ops.get_sibling_pages(page_id)
@@ -209,6 +405,17 @@ class MapService:
         .children-list a:hover {{
             text-decoration: underline;
         }}
+        .back-link {{
+            margin-bottom: 20px;
+            font-size: 1.1em;
+        }}
+        .back-link a {{
+            color: #0066cc;
+            text-decoration: none;
+        }}
+        .back-link a:hover {{
+            text-decoration: underline;
+        }}
     </style>
 </head>
 <body>
@@ -236,9 +443,26 @@ class MapService:
         """
         nav_parts = []
 
+        # Add Back to Parent link at the very top
+        parent = navigation.get("parent")
+        domain_group = navigation.get("domain_group")
+
+        if parent:
+            # Regular parent page
+            nav_parts.append(
+                f'<div class="back-link"><a href="/map/page/{parent["id"]}">← Back to {html.escape(parent.get("title") or "Parent")}</a></div>'
+            )
+        elif domain_group:
+            # Parent is a domain group
+            nav_parts.append(
+                f'<div class="back-link"><a href="/map/site/{domain_group["id"]}">← Back to {html.escape(domain_group.get("title") or "Domain Group")}</a></div>'
+            )
+        else:
+            # No parent - link back to all sites
+            nav_parts.append('<div class="back-link"><a href="/map">← Back to All Sites</a></div>')
+
         # Build breadcrumb
         current = navigation.get("current_page", {})
-        parent = navigation.get("parent")
         root = navigation.get("root")
 
         breadcrumb_parts = []
@@ -325,13 +549,25 @@ class MapService:
             url = html.escape(site.get("url") or "")
             crawl_date = site.get("crawl_date") or "Unknown"
 
-            site_items.append(f"""
-            <div class="site-item">
-                <h3><a href="/map/site/{site["id"]}">{title}</a></h3>
-                <p class="site-url">{url}</p>
-                <p class="site-meta">Crawled: {crawl_date}</p>
-            </div>
-            """)
+            # Check if this is a synthetic domain group
+            if site.get("is_synthetic"):
+                page_count = site.get("page_count", 0)
+                site_items.append(f"""
+                <div class="site-item">
+                    <h3><a href="/map/site/{site["id"]}">{title}</a></h3>
+                    <p class="site-url">{url}</p>
+                    <p class="site-meta">Domain Group • {page_count} pages</p>
+                    <p class="site-meta">First crawled: {crawl_date}</p>
+                </div>
+                """)
+            else:
+                site_items.append(f"""
+                <div class="site-item">
+                    <h3><a href="/map/site/{site["id"]}">{title}</a></h3>
+                    <p class="site-url">{url}</p>
+                    <p class="site-meta">Crawled: {crawl_date}</p>
+                </div>
+                """)
 
         html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -461,7 +697,7 @@ class MapService:
         if not tree:
             return self._empty_tree_html()
 
-        tree_html = self._build_tree_html(tree)
+        tree_html = self._build_tree_html(tree, is_root=True, is_last=True, ancestors_last=[])
         site_title = html.escape(tree.get("title") or "Site Map")
 
         html_content = f"""<!DOCTYPE html>
@@ -497,20 +733,22 @@ class MapService:
         }}
         .tree ul {{
             list-style-type: none;
-            padding-left: 20px;
+            padding-left: 0;
+            margin-left: 20px;
         }}
         .tree li {{
+            display: block;
             margin: 8px 0;
-            position: relative;
+            padding-left: 0;
         }}
-        .tree li::before {{
-            content: "├─ ";
+        .tree-line {{
             color: #999;
-            position: absolute;
-            left: -20px;
+            font-family: inherit;
+            white-space: pre;
+            display: inline;
         }}
-        .tree li:last-child::before {{
-            content: "└─ ";
+        .tree-node {{
+            display: inline-block;
         }}
         .tree a {{
             color: #0066cc;
@@ -520,21 +758,25 @@ class MapService:
             text-decoration: underline;
         }}
         .tree details {{
-            display: inline;
+            display: block;
         }}
         .tree summary {{
             cursor: pointer;
-            color: #0066cc;
             list-style: none;
+            display: inline;
         }}
         .tree summary::-webkit-details-marker {{
             display: none;
         }}
-        .tree details[open] > summary::before {{
-            content: "▼ ";
-        }}
-        .tree details:not([open]) > summary::before {{
+        .tree summary .tree-node::before {{
             content: "▶ ";
+            color: #999;
+            display: inline-block;
+            width: 15px;
+            margin-left: 5px;
+        }}
+        .tree details[open] > summary .tree-node::before {{
+            content: "▼ ";
         }}
         .back-link {{
             margin-bottom: 20px;
@@ -563,38 +805,63 @@ class MapService:
 
         return html_content
 
-    def _build_tree_html(self, node: dict[str, Any], is_root: bool = True) -> str:
-        """Recursively build HTML for a tree node.
+    def _build_tree_html(
+        self,
+        node: dict[str, Any],
+        is_root: bool = True,
+        is_last: bool = True,
+        ancestors_last: list[bool] = None,
+    ) -> str:
+        """Recursively build HTML for a tree node with classic tree lines and vertical connectors.
 
         Args:
             node: Tree node.
             is_root: Whether this is the root node.
+            is_last: Whether this node is the last child of its parent.
+            ancestors_last: List of booleans indicating if each ancestor was the last child.
 
         Returns:
             str: HTML for the node and its children.
         """
+        if ancestors_last is None:
+            ancestors_last = []
         title = html.escape(node.get("title") or "Untitled")
         page_id = node["id"]
         children = node.get("children", [])
 
+        # Build the prefix for the tree line
+        prefix = ""
+        for is_ancestor_last in ancestors_last:
+            prefix += "&nbsp;&nbsp;&nbsp;" if is_ancestor_last else "│&nbsp;&nbsp;"
+        if not is_root:
+            prefix += "└── " if is_last else "├── "
+
         if not children:
             # Leaf node - just a link
-            return f'<li><a href="/map/page/{page_id}">{title}</a></li>'
+            return f'<li><span class="tree-line">{prefix}</span><span class="tree-node"><a href="/map/page/{page_id}">{title}</a></span></li>'
         else:
             # Node with children - use collapsible details
-            children_html = "".join(self._build_tree_html(child, False) for child in children)
+            children_html = "".join(
+                self._build_tree_html(
+                    child,
+                    is_root=False,
+                    is_last=(i == len(children) - 1),
+                    ancestors_last=ancestors_last + [is_last],
+                )
+                for i, child in enumerate(children)
+            )
 
             if is_root:
                 # Root node is always expanded
                 return f"""<li>
-                    <a href="/map/page/{page_id}">{title}</a>
+                    <span class="tree-line"></span><span class="tree-node"><a href="/map/page/{page_id}">{title}</a></span>
                     <ul>{children_html}</ul>
                 </li>"""
             else:
                 # Non-root nodes are collapsible
                 return f"""<li>
                     <details>
-                        <summary><a href="/map/page/{page_id}">{title}</a></summary>
+                        <summary><span class="tree-line">{prefix}</span><span class="tree-node"><a href="/map/page/{page_id}">{title}</a></span></summary>
                         <ul>{children_html}</ul>
                     </details>
                 </li>"""

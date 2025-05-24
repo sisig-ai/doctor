@@ -305,13 +305,15 @@ class DatabaseOperations:
                 raise
 
     async def get_root_pages(self) -> list[dict[str, Any]]:
-        """Get all root pages (pages with no parent).
+        """Get all root pages (pages with no parent) that have proper hierarchy tracking.
+
+        This excludes legacy pages that don't have hierarchy information.
 
         Args:
             None.
 
         Returns:
-            list[dict[str, Any]]: List of root page records.
+            list[dict[str, Any]]: List of root page records with hierarchy.
         """
         with self.db as conn_manager:
             conn = conn_manager.conn
@@ -323,6 +325,9 @@ class DatabaseOperations:
                     conn.execute,
                     """SELECT * FROM pages
                        WHERE parent_page_id IS NULL
+                       AND root_page_id IS NOT NULL
+                       AND root_page_id = id
+                       AND (depth IS NOT NULL AND depth >= 0)
                        ORDER BY crawl_date DESC""",
                 )
                 rows = result.fetchall()
@@ -455,4 +460,66 @@ class DatabaseOperations:
                 return None
             except Exception as e:
                 logger.error(f"Error getting page by ID {page_id}: {e}")
+                raise
+
+    async def get_legacy_pages(self) -> list[dict[str, Any]]:
+        """Get all legacy pages (pages without proper hierarchy information).
+
+        A legacy page is one that doesn't have complete hierarchy tracking -
+        specifically pages that have no root_page_id or NULL depth, indicating
+        they were crawled before hierarchy tracking was implemented.
+
+        Args:
+            None.
+
+        Returns:
+            list[dict[str, Any]]: List of legacy page records.
+        """
+        with self.db as conn_manager:
+            conn = conn_manager.conn
+            if not conn:
+                raise RuntimeError("Failed to obtain database connection")
+
+            try:
+                result = await asyncio.to_thread(
+                    conn.execute,
+                    """SELECT * FROM pages
+                       WHERE root_page_id IS NULL
+                          OR depth IS NULL
+                       ORDER BY domain, url""",
+                )
+                rows = result.fetchall()
+                columns = [desc[0] for desc in result.description]
+                return [dict(zip(columns, row)) for row in rows]
+            except Exception as e:
+                logger.error(f"Error getting legacy pages: {e}")
+                raise
+
+    async def get_pages_by_domain(self, domain: str) -> list[dict[str, Any]]:
+        """Get all pages for a specific domain.
+
+        Args:
+            domain: The domain to filter by.
+
+        Returns:
+            list[dict[str, Any]]: List of page records for the domain.
+        """
+        with self.db as conn_manager:
+            conn = conn_manager.conn
+            if not conn:
+                raise RuntimeError("Failed to obtain database connection")
+
+            try:
+                result = await asyncio.to_thread(
+                    conn.execute,
+                    """SELECT * FROM pages
+                       WHERE domain = ?
+                       ORDER BY url""",
+                    [domain],
+                )
+                rows = result.fetchall()
+                columns = [desc[0] for desc in result.description]
+                return [dict(zip(columns, row)) for row in rows]
+            except Exception as e:
+                logger.error(f"Error getting pages for domain {domain}: {e}")
                 raise
