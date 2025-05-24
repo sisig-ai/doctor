@@ -100,9 +100,11 @@ The Maps feature provides a hierarchical view of crawled websites, making it eas
 
 **Features:**
 - **Hierarchical Navigation**: Pages maintain parent-child relationships, allowing you to navigate through the site structure
+- **Domain Grouping**: Pages from the same domain crawled individually are automatically grouped together
 - **Automatic Title Extraction**: Page titles are extracted from HTML or markdown content
 - **Breadcrumb Navigation**: Easy navigation with breadcrumbs showing the path from root to current page
 - **Sibling Navigation**: Quick access to pages at the same level in the hierarchy
+- **Legacy Page Support**: Pages crawled before hierarchy tracking are grouped by domain for easy access
 - **No JavaScript Required**: All navigation works with pure HTML and CSS for maximum compatibility
 
 **Usage Example:**
